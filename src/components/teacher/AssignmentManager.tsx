@@ -3,15 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Assignment, ClassRoom, ExerciseSet, StudentSubmission } from '../../types/index.ts';
-import { Plus, CheckCircle, Clock, Calendar, AlertCircle, ArrowRight } from 'lucide-react';
+import { Plus, AlertCircle } from 'lucide-react';
 
 interface AssignmentManagerProps {
   classes: ClassRoom[];
   assignments: Assignment[];
   exercises: ExerciseSet[];
   submissions: StudentSubmission[];
+  currentUserName: string;
+  authToken?: string | null;
   onAssignCreated: (assignment: Assignment) => void;
 }
 
@@ -20,6 +22,8 @@ export const AssignmentManager: React.FC<AssignmentManagerProps> = ({
   assignments,
   exercises,
   submissions,
+  currentUserName,
+  authToken,
   onAssignCreated,
 }) => {
   const [showModal, setShowModal] = useState(false);
@@ -27,28 +31,51 @@ export const AssignmentManager: React.FC<AssignmentManagerProps> = ({
   const [selectedExId, setSelectedExId] = useState(exercises[0]?.id || '');
   const [deadline, setDeadline] = useState('2026-11-20');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  useEffect(() => {
+    if (!selectedClassId && classes.length > 0) {
+      setSelectedClassId(classes[0].id);
+    }
+  }, [classes, selectedClassId]);
+
+  useEffect(() => {
+    if (!selectedExId && exercises.length > 0) {
+      setSelectedExId(exercises[0].id);
+    }
+  }, [exercises, selectedExId]);
 
   const handleCreateAssignment = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedClassId || !selectedExId) {
+      setErrorMsg('Vui lòng chọn lớp học và bộ bài tập hợp lệ.');
+      return;
+    }
     setIsSubmitting(true);
+    setErrorMsg('');
     try {
       const res = await fetch('/api/assignments', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
         body: JSON.stringify({
           classId: selectedClassId,
           exerciseSetId: selectedExId,
           deadline: new Date(deadline).toISOString(),
-          assignedBy: 'Cô Nguyễn Mai',
+          assignedBy: currentUserName,
         }),
       });
       const data = await res.json();
-      if (data.success && data.assignment) {
+      if (res.ok && data.success && data.assignment) {
         onAssignCreated(data.assignment);
         setShowModal(false);
+      } else {
+        setErrorMsg(data.error || 'Không thể giao bài tập lúc này.');
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      setErrorMsg('Lỗi kết nối máy chủ khi giao bài tập.');
     } finally {
       setIsSubmitting(false);
     }
@@ -68,7 +95,10 @@ export const AssignmentManager: React.FC<AssignmentManagerProps> = ({
         </div>
 
         <button
-          onClick={() => setShowModal(true)}
+          onClick={() => {
+            setErrorMsg('');
+            setShowModal(true);
+          }}
           className="px-4 py-2.5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-700 rounded-xl transition-colors flex items-center gap-1.5 self-start sm:self-auto shadow-sm"
         >
           <Plus className="w-4 h-4" />
@@ -87,50 +117,59 @@ export const AssignmentManager: React.FC<AssignmentManagerProps> = ({
           </span>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-600 dark:text-slate-300">
-            <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-400 uppercase text-[10px] font-semibold tracking-wider">
-              <tr>
-                <th className="px-5 py-3.5">Tiêu đề bài tập</th>
-                <th className="px-5 py-3.5">Lớp áp dụng</th>
-                <th className="px-5 py-3.5">Hạn nộp</th>
-                <th className="px-5 py-3.5">Tiến độ nộp</th>
-                <th className="px-5 py-3.5">Trạng thái</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {assignments.map((a) => (
-                <tr key={a.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
-                  <td className="px-5 py-4 font-semibold text-slate-900 dark:text-white">
-                    {a.title}
-                  </td>
-                  <td className="px-5 py-4">{a.className}</td>
-                  <td className="px-5 py-4 font-mono">
-                    {new Date(a.deadline).toLocaleDateString('vi-VN')}
-                  </td>
-                  <td className="px-5 py-4">
-                    <div className="flex items-center gap-2">
-                      <div className="w-24 bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
-                        <div
-                          className="bg-cyan-500 h-full rounded-full"
-                          style={{ width: `${(a.completedCount / a.totalStudents) * 100}%` }}
-                        />
-                      </div>
-                      <span className="font-mono text-[11px]">
-                        {a.completedCount}/{a.totalStudents}
-                      </span>
-                    </div>
-                  </td>
-                  <td className="px-5 py-4">
-                    <span className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
-                      Đang mở
-                    </span>
-                  </td>
+        {assignments.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-600 dark:text-slate-300">
+              <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-400 uppercase text-[10px] font-semibold tracking-wider">
+                <tr>
+                  <th className="px-5 py-3.5">Tiêu đề bài tập</th>
+                  <th className="px-5 py-3.5">Lớp áp dụng</th>
+                  <th className="px-5 py-3.5">Hạn nộp</th>
+                  <th className="px-5 py-3.5">Tiến độ nộp</th>
+                  <th className="px-5 py-3.5">Trạng thái</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {assignments.map((a) => {
+                  const pct = a.totalStudents > 0 ? Math.min(100, (a.completedCount / a.totalStudents) * 100) : 0;
+                  return (
+                    <tr key={a.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
+                      <td className="px-5 py-4 font-semibold text-slate-900 dark:text-white">
+                        {a.title}
+                      </td>
+                      <td className="px-5 py-4">{a.className}</td>
+                      <td className="px-5 py-4 font-mono">
+                        {new Date(a.deadline).toLocaleDateString('vi-VN')}
+                      </td>
+                      <td className="px-5 py-4">
+                        <div className="flex items-center gap-2">
+                          <div className="w-24 bg-slate-100 dark:bg-slate-800 h-2 rounded-full overflow-hidden">
+                            <div
+                              className="bg-cyan-500 h-full rounded-full"
+                              style={{ width: `${pct}%` }}
+                            />
+                          </div>
+                          <span className="font-mono text-[11px]">
+                            {a.completedCount}/{a.totalStudents}
+                          </span>
+                        </div>
+                      </td>
+                      <td className="px-5 py-4">
+                        <span className="px-2.5 py-1 rounded-md text-[11px] font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800">
+                          {a.status === 'active' ? 'Đang mở' : 'Đã đóng'}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="p-8 text-center text-xs text-slate-400">
+            Chưa có bài tập nào được giao. Hãy nhấn "Giao bài tập mới" ở góc trên.
+          </div>
+        )}
       </div>
 
       {/* Submissions & Error Diagnosis Table */}
@@ -149,47 +188,53 @@ export const AssignmentManager: React.FC<AssignmentManagerProps> = ({
           </span>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs text-slate-600 dark:text-slate-300">
-            <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-400 uppercase text-[10px] font-semibold tracking-wider">
-              <tr>
-                <th className="px-5 py-3.5">Học sinh</th>
-                <th className="px-5 py-3.5">Điểm số</th>
-                <th className="px-5 py-3.5">Thời gian làm</th>
-                <th className="px-5 py-3.5">Nhận xét của EduBot</th>
-                <th className="px-5 py-3.5">Thời điểm nộp</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-              {submissions.map((s) => (
-                <tr key={s.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
-                  <td className="px-5 py-4 font-semibold text-slate-900 dark:text-white">
-                    {s.studentName}
-                  </td>
-                  <td className="px-5 py-4">
-                    <span
-                      className={`font-mono font-bold text-sm ${
-                        s.score >= 8 ? 'text-emerald-500' : s.score >= 5 ? 'text-amber-500' : 'text-rose-500'
-                      }`}
-                    >
-                      {s.score}/10
-                    </span>
-                  </td>
-                  <td className="px-5 py-4 font-mono">
-                    {Math.round(s.timeSpentSeconds / 60)} phút
-                  </td>
-                  <td className="px-5 py-4 max-w-xs text-slate-700 dark:text-slate-300">
-                    {s.feedback}
-                  </td>
-                  <td className="px-5 py-4 font-mono text-slate-400">
-                    {new Date(s.completedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })},{' '}
-                    {new Date(s.completedAt).toLocaleDateString('vi-VN')}
-                  </td>
+        {submissions.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs text-slate-600 dark:text-slate-300">
+              <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-400 uppercase text-[10px] font-semibold tracking-wider">
+                <tr>
+                  <th className="px-5 py-3.5">Học sinh</th>
+                  <th className="px-5 py-3.5">Điểm số</th>
+                  <th className="px-5 py-3.5">Thời gian làm</th>
+                  <th className="px-5 py-3.5">Nhận xét của EduBot</th>
+                  <th className="px-5 py-3.5">Thời điểm nộp</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                {submissions.map((s) => (
+                  <tr key={s.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
+                    <td className="px-5 py-4 font-semibold text-slate-900 dark:text-white">
+                      {s.studentName}
+                    </td>
+                    <td className="px-5 py-4">
+                      <span
+                        className={`font-mono font-bold text-sm ${
+                          s.score >= 8 ? 'text-emerald-500' : s.score >= 5 ? 'text-amber-500' : 'text-rose-500'
+                        }`}
+                      >
+                        {s.score}/10
+                      </span>
+                    </td>
+                    <td className="px-5 py-4 font-mono">
+                      {Math.max(1, Math.round(s.timeSpentSeconds / 60))} phút
+                    </td>
+                    <td className="px-5 py-4 max-w-xs text-slate-700 dark:text-slate-300">
+                      {s.feedback}
+                    </td>
+                    <td className="px-5 py-4 font-mono text-slate-400">
+                      {new Date(s.completedAt).toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })},{' '}
+                      {new Date(s.completedAt).toLocaleDateString('vi-VN')}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="p-8 text-center text-xs text-slate-400">
+            Chưa có bài nộp nào từ học sinh.
+          </div>
+        )}
       </div>
 
       {/* Modal: Giao bài tập */}
@@ -199,6 +244,13 @@ export const AssignmentManager: React.FC<AssignmentManagerProps> = ({
             <h3 className="text-lg font-bold text-slate-900 dark:text-white font-display">
               Giao bài tập cho Lớp
             </h3>
+
+            {errorMsg && (
+              <div className="p-3 rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-600 dark:text-rose-300 flex items-center gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>{errorMsg}</span>
+              </div>
+            )}
 
             <form onSubmit={handleCreateAssignment} className="space-y-4">
               <div className="space-y-1.5">
@@ -258,7 +310,7 @@ export const AssignmentManager: React.FC<AssignmentManagerProps> = ({
                 </button>
                 <button
                   type="submit"
-                  disabled={isSubmitting}
+                  disabled={isSubmitting || !selectedClassId || !selectedExId}
                   className="px-4 py-2 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-700 rounded-xl transition-colors disabled:opacity-50"
                 >
                   {isSubmitting ? 'Đang giao...' : 'Xác nhận giao bài'}

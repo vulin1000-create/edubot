@@ -3,15 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, UserRole } from '../../types/index.ts';
-import { Bot, X, Check, Lock, Mail, User as UserIcon, Shield, GraduationCap, School } from 'lucide-react';
+import { Bot, X, Lock, Mail, User as UserIcon } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAuthSuccess: (user: User) => void;
+  onAuthSuccess: (user: User, token: string) => void;
   initialMode?: 'login' | 'register' | 'forgot';
+  suggestedRole?: UserRole;
 }
 
 export const AuthModal: React.FC<AuthModalProps> = ({
@@ -19,6 +20,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onAuthSuccess,
   initialMode = 'login',
+  suggestedRole,
 }) => {
   const [mode, setMode] = useState<'login' | 'register' | 'forgot'>(initialMode);
   const [email, setEmail] = useState('');
@@ -37,26 +39,43 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [otpCode, setOtpCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
 
+  useEffect(() => {
+    if (isOpen) {
+      setMode(initialMode);
+      setErrorMsg('');
+      setSuccessMsg('');
+      setOtpStep(false);
+      if (suggestedRole) {
+        handleQuickDemoFill(suggestedRole);
+      }
+    }
+  }, [isOpen, initialMode, suggestedRole]);
+
   if (!isOpen) return null;
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!email.trim() || !password) {
+      setErrorMsg('Vui lòng nhập đầy đủ email và mật khẩu.');
+      return;
+    }
     setIsLoading(true);
     setErrorMsg('');
+    setSuccessMsg('');
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, role }),
+        body: JSON.stringify({ email: email.trim(), password }),
       });
       const data = await res.json();
-      if (data.success && data.user) {
-        onAuthSuccess(data.user);
+      if (res.ok && data.success && data.user && data.token) {
+        onAuthSuccess(data.user, data.token);
         onClose();
       } else {
-        setErrorMsg(data.error || 'Đăng nhập không thành công.');
+        setErrorMsg(data.error || 'Email hoặc mật khẩu không chính xác.');
       }
-    } catch (err: any) {
+    } catch {
       setErrorMsg('Lỗi kết nối máy chủ xác thực.');
     } finally {
       setIsLoading(false);
@@ -69,29 +88,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setErrorMsg('Vui lòng xác nhận sự đồng ý của cha mẹ hoặc người giám hộ hợp pháp theo Luật Trẻ em.');
       return;
     }
+    if (password.length < 6) {
+      setErrorMsg('Mật khẩu phải có ít nhất 6 ký tự.');
+      return;
+    }
 
     setIsLoading(true);
     setErrorMsg('');
+    setSuccessMsg('');
     try {
       const res = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name,
-          email,
+          name: name.trim(),
+          email: email.trim(),
+          password,
           role,
           grade: role === 'student' ? grade : undefined,
-          school,
+          school: school.trim(),
         }),
       });
       const data = await res.json();
-      if (data.success && data.user) {
-        onAuthSuccess(data.user);
+      if (res.ok && data.success && data.user && data.token) {
+        onAuthSuccess(data.user, data.token);
         onClose();
       } else {
         setErrorMsg(data.error || 'Đăng ký không thành công.');
       }
-    } catch (err: any) {
+    } catch {
       setErrorMsg('Lỗi kết nối máy chủ đăng ký.');
     } finally {
       setIsLoading(false);
@@ -102,41 +127,72 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     e.preventDefault();
     setIsLoading(true);
     setErrorMsg('');
+    setSuccessMsg('');
     try {
       const res = await fetch('/api/auth/forgot-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify({ email: email.trim() }),
       });
       const data = await res.json();
-      if (data.success) {
+      if (res.ok && data.success) {
         setSuccessMsg(data.message);
         setOtpStep(true);
       } else {
         setErrorMsg(data.error || 'Không tìm thấy tài khoản.');
       }
-    } catch (err: any) {
+    } catch {
       setErrorMsg('Lỗi kết nối khôi phục mật khẩu.');
     } finally {
       setIsLoading(false);
     }
   };
 
-  const handleResetPasswordWithOtp = (e: React.FormEvent) => {
+  const handleResetPasswordWithOtp = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!otpCode || !newPassword) {
+    if (!otpCode.trim() || !newPassword) {
       setErrorMsg('Vui lòng nhập mã OTP và mật khẩu mới.');
       return;
     }
-    setSuccessMsg('Đổi mật khẩu thành công! Vui lòng đăng nhập lại.');
-    setTimeout(() => {
-      setMode('login');
-      setOtpStep(false);
-      setSuccessMsg('');
-    }, 1500);
+    if (newPassword.length < 6) {
+      setErrorMsg('Mật khẩu mới phải có ít nhất 6 ký tự.');
+      return;
+    }
+
+    setIsLoading(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: email.trim(),
+          otpCode: otpCode.trim(),
+          newPassword,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setSuccessMsg(data.message || 'Đổi mật khẩu thành công! Vui lòng đăng nhập lại.');
+        setOtpStep(false);
+        setOtpCode('');
+        setPassword('');
+        setNewPassword('');
+        setMode('login');
+      } else {
+        setErrorMsg(data.error || 'Mã OTP không chính xác hoặc đã hết hạn.');
+      }
+    } catch {
+      setErrorMsg('Lỗi kết nối máy chủ đặt lại mật khẩu.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleQuickDemoLogin = (targetRole: UserRole, targetGrade?: number) => {
+  function handleQuickDemoFill(targetRole: UserRole) {
+    setErrorMsg('');
+    setPassword('edubot2026');
     if (targetRole === 'student') {
       setEmail('tuan.nh@edubot.edu.vn');
       setRole('student');
@@ -147,14 +203,15 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setEmail('admin@edubot.edu.vn');
       setRole('admin');
     }
-  };
+  }
 
   return (
     <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-white dark:bg-slate-900 max-w-md w-full rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 sm:p-8 space-y-6 animate-in fade-in zoom-in-95 relative">
+      <div className="bg-white dark:bg-slate-900 max-w-md w-full rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xl p-6 sm:p-8 space-y-6 animate-in fade-in zoom-in-95 relative max-h-[92vh] overflow-y-auto">
         {/* Close Button */}
         <button
           onClick={onClose}
+          aria-label="Đóng hộp thoại đăng nhập"
           className="absolute top-5 right-5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200"
         >
           <X className="w-5 h-5" />
@@ -182,6 +239,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {/* Navigation Tabs */}
         <div className="flex rounded-xl bg-slate-100 dark:bg-slate-800 p-1 text-xs font-semibold">
           <button
+            type="button"
             onClick={() => {
               setMode('login');
               setErrorMsg('');
@@ -196,6 +254,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             Đăng nhập
           </button>
           <button
+            type="button"
             onClick={() => {
               setMode('register');
               setErrorMsg('');
@@ -210,6 +269,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             Đăng ký
           </button>
           <button
+            type="button"
             onClick={() => {
               setMode('forgot');
               setErrorMsg('');
@@ -232,7 +292,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         )}
 
         {successMsg && (
-          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-600 dark:text-emerald-300">
+          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-700 dark:text-emerald-300">
             {successMsg}
           </div>
         )}
@@ -274,7 +334,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
                 <input
                   type="password"
-                  placeholder="••••••••"
+                  required
+                  placeholder="Nhập mật khẩu..."
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500 font-mono"
@@ -282,29 +343,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
             </div>
 
-            {/* Quick Demo Acccount Switchers */}
-            <div className="pt-1">
-              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                Hoặc chọn tài khoản thử nghiệm nhanh:
+            {/* Quick Demo Account Helpers */}
+            <div className="pt-1 space-y-2">
+              <div className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                Điền nhanh tài khoản mẫu (Mật khẩu: edubot2026):
               </div>
               <div className="grid grid-cols-3 gap-2 text-[11px]">
                 <button
                   type="button"
-                  onClick={() => handleQuickDemoLogin('student')}
+                  onClick={() => handleQuickDemoFill('student')}
                   className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-cyan-500 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium text-center"
                 >
                   Em Tuấn (Lớp 4)
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleQuickDemoLogin('teacher')}
+                  onClick={() => handleQuickDemoFill('teacher')}
                   className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-emerald-500 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium text-center"
                 >
                   Cô Mai (Giáo viên)
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleQuickDemoLogin('admin')}
+                  onClick={() => handleQuickDemoFill('admin')}
                   className="p-2 rounded-lg border border-slate-200 dark:border-slate-700 hover:border-purple-500 bg-slate-50 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-medium text-center"
                 >
                   Quản trị viên
@@ -359,6 +420,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </div>
             </div>
 
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                Mật khẩu (tối thiểu 6 ký tự):
+              </label>
+              <div className="relative">
+                <Lock className="w-4 h-4 text-slate-400 absolute left-3.5 top-3" />
+                <input
+                  type="password"
+                  required
+                  minLength={6}
+                  placeholder="••••••••"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  className="w-full pl-10 pr-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500 font-mono"
+                />
+              </div>
+            </div>
+
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
                 <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
@@ -394,6 +473,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               )}
             </div>
 
+            <div className="space-y-1">
+              <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                Trường học:
+              </label>
+              <input
+                type="text"
+                value={school}
+                onChange={(e) => setSchool(e.target.value)}
+                className="w-full px-3.5 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
+              />
+            </div>
+
             {/* Child Protection & Parental Consent Checkbox */}
             {role === 'student' && (
               <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs flex items-start gap-2.5">
@@ -426,7 +517,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {!otpStep ? (
               <form onSubmit={handleForgotPassword} className="space-y-4">
                 <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
-                  Nhập email đăng ký của bạn. Hệ thống EduBot sẽ gửi mã OTP bảo mật 6 chữ số để xác minh quyền sở hữu tài khoản.
+                  Nhập email đăng ký của bạn. Hệ thống EduBot sẽ tạo mã OTP bảo mật 6 chữ số để xác minh quyền sở hữu tài khoản.
                 </p>
 
                 <div className="space-y-1">
@@ -436,7 +527,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <input
                     type="email"
                     required
-                    placeholder="email@edubot.edu.vn"
+                    placeholder="tuan.nh@edubot.edu.vn"
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
@@ -448,7 +539,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   disabled={isLoading}
                   className="w-full py-2.5 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-700 rounded-xl transition-all disabled:opacity-60"
                 >
-                  {isLoading ? 'Đang gửi...' : 'Gửi mã xác nhận OTP'}
+                  {isLoading ? 'Đang tạo mã OTP...' : 'Gửi mã xác nhận OTP'}
                 </button>
               </form>
             ) : (
@@ -460,7 +551,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <input
                     type="text"
                     required
-                    placeholder="123456"
+                    placeholder="Nhập 6 chữ số OTP..."
                     value={otpCode}
                     onChange={(e) => setOtpCode(e.target.value)}
                     className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs font-mono tracking-widest text-center text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
@@ -469,11 +560,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
                 <div className="space-y-1">
                   <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">
-                    Mật khẩu mới:
+                    Mật khẩu mới (tối thiểu 6 ký tự):
                   </label>
                   <input
                     type="password"
                     required
+                    minLength={6}
                     placeholder="Nhập mật khẩu mới..."
                     value={newPassword}
                     onChange={(e) => setNewPassword(e.target.value)}
@@ -483,9 +575,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
                 <button
                   type="submit"
-                  className="w-full py-2.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-all shadow-md"
+                  disabled={isLoading}
+                  className="w-full py-2.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl transition-all shadow-md disabled:opacity-60"
                 >
-                  Xác nhận đổi mật khẩu
+                  {isLoading ? 'Đang xử lý...' : 'Xác nhận đổi mật khẩu'}
                 </button>
               </form>
             )}

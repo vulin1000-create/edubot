@@ -3,24 +3,22 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
-import { Lesson, ResourceStatus } from '../../types/index.ts';
-import { EduBotMascot } from '../EduBotMascot.tsx';
+import React, { useState, useEffect } from 'react';
+import { Lesson } from '../../types/index.ts';
 import {
   ArrowLeft,
   CheckCircle2,
   AlertTriangle,
   Lightbulb,
-  BookOpen,
   Bot,
   PlayCircle,
   HelpCircle,
-  FileCheck2,
-  Share2
+  FileCheck2
 } from 'lucide-react';
 
 interface LessonViewerProps {
   lesson: Lesson;
+  hasMatchingExercise?: boolean;
   onBack: () => void;
   onOpenExercise: (lessonId: string) => void;
   onAskAi: (lessonTitle: string, lessonId: string) => void;
@@ -28,6 +26,7 @@ interface LessonViewerProps {
 
 export const LessonViewer: React.FC<LessonViewerProps> = ({
   lesson,
+  hasMatchingExercise = true,
   onBack,
   onOpenExercise,
   onAskAi,
@@ -35,12 +34,33 @@ export const LessonViewer: React.FC<LessonViewerProps> = ({
   const [activeCheckpointAnswer, setActiveCheckpointAnswer] = useState<number | null>(null);
   const [showCheckpointFeedback, setShowCheckpointFeedback] = useState(false);
 
+  useEffect(() => {
+    setActiveCheckpointAnswer(null);
+    setShowCheckpointFeedback(false);
+  }, [lesson.id]);
+
   const checkpoint = lesson.interactiveContent?.sections[0]?.checkpointQuestion;
+
+  const statusBadge =
+    lesson.status === 'verified'
+      ? {
+          cls: 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800',
+          label: `Đã thẩm định - ${lesson.officialReference.docNumber}`,
+        }
+      : lesson.status === 'pending'
+      ? {
+          cls: 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800',
+          label: `Đang chờ thẩm định - ${lesson.officialReference.docNumber}`,
+        }
+      : {
+          cls: 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800',
+          label: `Chưa xác minh nguồn - Cần rà soát`,
+        };
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-16">
       {/* Top action bar */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <button
           onClick={onBack}
           className="flex items-center gap-1.5 text-xs font-semibold text-slate-600 dark:text-slate-300 hover:text-slate-900 dark:hover:text-white transition-colors"
@@ -51,9 +71,9 @@ export const LessonViewer: React.FC<LessonViewerProps> = ({
 
         {/* Verification Status Banner */}
         <div className="flex items-center gap-2 text-xs">
-          <span className="flex items-center gap-1 font-semibold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 px-2.5 py-1 rounded-md border border-emerald-200 dark:border-emerald-800">
+          <span className={`flex items-center gap-1 font-semibold px-2.5 py-1 rounded-md border ${statusBadge.cls}`}>
             <FileCheck2 className="w-3.5 h-3.5" />
-            <span>Đã thẩm định - {lesson.officialReference.docNumber}</span>
+            <span>{statusBadge.label}</span>
           </span>
         </div>
       </div>
@@ -80,13 +100,19 @@ export const LessonViewer: React.FC<LessonViewerProps> = ({
 
         {/* Quick action buttons */}
         <div className="pt-2 flex flex-wrap items-center gap-3">
-          <button
-            onClick={() => onOpenExercise(lesson.id)}
-            className="px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-cyan-600 hover:bg-cyan-700 rounded-xl transition-colors flex items-center gap-2 shadow-sm"
-          >
-            <PlayCircle className="w-4 h-4" />
-            <span>Làm bài tập luyện tập</span>
-          </button>
+          {hasMatchingExercise ? (
+            <button
+              onClick={() => onOpenExercise(lesson.id)}
+              className="px-4 py-2 text-xs sm:text-sm font-semibold text-white bg-cyan-600 hover:bg-cyan-700 rounded-xl transition-colors flex items-center gap-2 shadow-sm"
+            >
+              <PlayCircle className="w-4 h-4" />
+              <span>Làm bài tập luyện tập</span>
+            </button>
+          ) : (
+            <span className="text-xs text-slate-400 italic">
+              Bài học này đang được bổ sung bộ bài tập thực hành.
+            </span>
+          )}
 
           <button
             onClick={() => onAskAi(lesson.title, lesson.id)}
@@ -98,7 +124,7 @@ export const LessonViewer: React.FC<LessonViewerProps> = ({
         </div>
       </div>
 
-      {/* 1. Yêu cầu cần đạt (Objectives) */}
+      {/* 1. Yêu cầu cần đạt */}
       <div className="bg-cyan-50/70 dark:bg-cyan-950/20 p-6 rounded-3xl border border-cyan-100 dark:border-cyan-900/40 space-y-3">
         <div className="flex items-center gap-2 text-cyan-900 dark:text-cyan-300 font-bold text-sm">
           <CheckCircle2 className="w-4 h-4 text-cyan-600" />
@@ -110,6 +136,20 @@ export const LessonViewer: React.FC<LessonViewerProps> = ({
           ))}
         </ul>
       </div>
+
+      {/* Core Knowledge Summary when no interactive sections exist */}
+      {(!lesson.interactiveContent || lesson.interactiveContent.sections.length === 0) && lesson.coreKnowledge.length > 0 && (
+        <div className="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-3">
+          <h2 className="text-lg font-bold text-slate-900 dark:text-white font-display">
+            Kiến thức trọng tâm bài học
+          </h2>
+          <ul className="space-y-2 text-sm text-slate-700 dark:text-slate-300 list-disc list-inside leading-relaxed">
+            {lesson.coreKnowledge.map((k, idx) => (
+              <li key={idx}>{k}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* 2. Interactive Discovery Sections */}
       {lesson.interactiveContent?.sections.map((sec, idx) => (
@@ -192,7 +232,7 @@ export const LessonViewer: React.FC<LessonViewerProps> = ({
         </div>
       )}
 
-      {/* 4. Common Misconceptions (Lỗi sai thường gặp) */}
+      {/* 4. Common Misconceptions */}
       <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-3">
         <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400 font-bold text-sm">
           <AlertTriangle className="w-4 h-4 text-rose-500" />

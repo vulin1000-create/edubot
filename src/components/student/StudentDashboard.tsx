@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { User, CurriculumSubject, Assignment, Lesson } from '../../types/index.ts';
+import { User, CurriculumSubject, Assignment, Lesson, StudentSubmission } from '../../types/index.ts';
 import { EduBotMascot } from '../EduBotMascot.tsx';
 import {
   Flame,
@@ -16,9 +16,7 @@ import {
   CheckCircle2,
   Play,
   Sparkles,
-  Calculator,
-  Compass,
-  Cpu
+  Compass
 } from 'lucide-react';
 
 interface StudentDashboardProps {
@@ -26,6 +24,7 @@ interface StudentDashboardProps {
   subjects: CurriculumSubject[];
   assignments: Assignment[];
   lessons: Lesson[];
+  submissions: StudentSubmission[];
   onSelectSubject: (subjectId: string) => void;
   onOpenLesson: (lessonId: string) => void;
   onOpenExercise: (exerciseSetId: string, assignmentId?: string) => void;
@@ -39,6 +38,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   subjects,
   assignments,
   lessons,
+  submissions,
   onSelectSubject,
   onOpenLesson,
   onOpenExercise,
@@ -50,31 +50,37 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
 
   const activeAssignments = assignments.filter((a) => a.status === 'active');
   const recentLesson = lessons[0];
+  const myCompletedCount = submissions.filter((s) => s.studentId === user.id).length;
+  const currentLevel = Math.floor((user.xp ?? 0) / 200) + 1;
+  const shortFirstName = user.name.trim().split(' ').slice(-1)[0] || user.name;
+
+  const getSubjectName = (subjectId: string) =>
+    subjects.find((s) => s.id === subjectId)?.name || subjectId.toUpperCase();
 
   return (
     <div className="space-y-8 pb-12">
       {/* Hero Banner Section */}
       <div className="relative rounded-3xl overflow-hidden border border-slate-200 dark:border-slate-800 shadow-xl bg-slate-900 text-white min-h-[320px] flex flex-col justify-end">
-        {/* Background visual asset */}
         <img
           src={heroImage}
           alt="Future Learning Space"
           referrerPolicy="no-referrer"
           className="absolute inset-0 w-full h-full object-cover opacity-45"
         />
-        {/* High-contrast gradient scrim */}
         <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/70 to-transparent" />
 
-        {/* Content Area */}
         <div className="relative z-10 p-6 sm:p-8 md:p-10 flex flex-col md:flex-row items-center justify-between gap-6">
           <div className="space-y-3 max-w-xl text-center md:text-left">
-            {/* Clean unboxed metadata separator */}
-            <div className="flex items-center justify-center md:justify-start gap-2 text-xs font-semibold text-cyan-300">
-              <span>Học kỳ II</span>
+            <div className="flex flex-wrap items-center justify-center md:justify-start gap-2 text-xs font-semibold text-cyan-300">
+              <span>Năm học 2025 - 2026</span>
               <span aria-hidden="true">·</span>
               <span>Lớp {user.grade || 4}</span>
-              <span aria-hidden="true">·</span>
-              <span>Trường TH Thăng Long</span>
+              {user.school && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span>{user.school}</span>
+                </>
+              )}
             </div>
 
             <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight font-display text-white">
@@ -82,8 +88,17 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </h1>
 
             <p className="text-sm sm:text-base text-slate-300 font-normal leading-relaxed">
-              Hôm nay EduBot đã chuẩn bị bài học mới về <strong>Phân số bằng nhau</strong> và 2 thử thách tính nhanh.
-              Bạn đã sẵn sàng tích lũy thêm điểm kinh nghiệm chưa?
+              {recentLesson ? (
+                <>
+                  Hôm nay EduBot gợi ý bài học <strong>{recentLesson.title}</strong> và{' '}
+                  {activeAssignments.length > 0
+                    ? `${activeAssignments.length} nhiệm vụ đang mở.`
+                    : 'các thử thách luyện tập thú vị.'}{' '}
+                  Bạn đã sẵn sàng tích lũy thêm điểm kinh nghiệm chưa?
+                </>
+              ) : (
+                'Chọn khối lớp và môn học yêu thích để khám phá bài giảng và thử thách tương tác cùng EduBot nhé!'
+              )}
             </p>
 
             <div className="pt-2 flex flex-wrap items-center justify-center md:justify-start gap-3">
@@ -117,12 +132,11 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </div>
           </div>
 
-          {/* EduBot 3D Robot Interactive Mascot */}
           <div className="shrink-0">
             <EduBotMascot
               expression="celebrating"
               size="lg"
-              message={`Chào bạn Tuấn! Chuỗi học ${user.streakDays || 7} ngày liên tục thật cừ khôi! 🚀`}
+              message={`Chào bạn ${shortFirstName}! Chuỗi học ${user.streakDays ?? 1} ngày liên tục thật cừ khôi! 🚀`}
               onTalkClick={onOpenTutor}
             />
           </div>
@@ -137,7 +151,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </div>
           <div>
             <div className="text-xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
-              {user.streakDays || 7} Ngày
+              {user.streakDays ?? 1} Ngày
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Chuỗi học kiên trì</div>
           </div>
@@ -149,7 +163,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </div>
           <div>
             <div className="text-xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
-              {user.xp || 850} XP
+              {user.xp ?? 0} XP
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Năng lượng khám phá</div>
           </div>
@@ -161,7 +175,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </div>
           <div>
             <div className="text-xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
-              {user.badges?.length || 3} Huy hiệu
+              {user.badges?.length ?? 0} Huy hiệu
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Chiến công đạt được</div>
           </div>
@@ -173,17 +187,15 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </div>
           <div>
             <div className="text-xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
-              14 Bài học
+              {myCompletedCount} Bài nộp
             </div>
-            <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Đã hoàn thành xuất sắc</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Đã hoàn thành thực tế</div>
           </div>
         </div>
       </div>
 
       {/* Main Grid: Active Assignments & Subject Universe */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        
-        {/* Left 2 Cols: Active Assignments & Recommended Quests */}
         <div className="lg:col-span-2 space-y-6">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-bold text-slate-900 dark:text-white font-display flex items-center gap-2">
@@ -195,42 +207,48 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </span>
           </div>
 
-          <div className="space-y-3">
-            {activeAssignments.map((assign) => (
-              <div
-                key={assign.id}
-                className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-cyan-400 dark:hover:border-cyan-600 transition-all shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
-                    <span className="font-semibold text-cyan-600 dark:text-cyan-400">
-                      {assign.subjectId === 'toan' ? 'Toán học' : 'Tiếng Việt'}
-                    </span>
-                    <span aria-hidden="true">·</span>
-                    <span>{assign.assignedBy}</span>
-                    <span aria-hidden="true">·</span>
-                    <span className="text-amber-600 dark:text-amber-400 font-medium">
-                      Hạn: 15/11/2026
-                    </span>
-                  </div>
-                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                    {assign.title}
-                  </h3>
-                  <p className="text-xs text-slate-600 dark:text-slate-400">
-                    Đã có {assign.completedCount}/{assign.totalStudents} bạn trong lớp hoàn thành.
-                  </p>
-                </div>
-
-                <button
-                  onClick={() => onOpenExercise(assign.exerciseSetId, assign.id)}
-                  className="px-4 py-2 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-700 rounded-xl transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
+          {activeAssignments.length > 0 ? (
+            <div className="space-y-3">
+              {activeAssignments.map((assign) => (
+                <div
+                  key={assign.id}
+                  className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-cyan-400 dark:hover:border-cyan-600 transition-all shadow-sm flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4"
                 >
-                  <span>Làm bài ngay</span>
-                  <ArrowRight className="w-3.5 h-3.5" />
-                </button>
-              </div>
-            ))}
-          </div>
+                  <div className="space-y-1">
+                    <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+                      <span className="font-semibold text-cyan-600 dark:text-cyan-400">
+                        {getSubjectName(assign.subjectId)}
+                      </span>
+                      <span aria-hidden="true">·</span>
+                      <span>{assign.assignedBy}</span>
+                      <span aria-hidden="true">·</span>
+                      <span className="text-amber-600 dark:text-amber-400 font-medium">
+                        Hạn: {new Date(assign.deadline).toLocaleDateString('vi-VN')}
+                      </span>
+                    </div>
+                    <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                      {assign.title}
+                    </h3>
+                    <p className="text-xs text-slate-600 dark:text-slate-400">
+                      Đã có {assign.completedCount}/{assign.totalStudents} bạn trong lớp hoàn thành.
+                    </p>
+                  </div>
+
+                  <button
+                    onClick={() => onOpenExercise(assign.exerciseSetId, assign.id)}
+                    className="px-4 py-2 text-xs font-semibold text-white bg-cyan-600 hover:bg-cyan-700 rounded-xl transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
+                  >
+                    <span>Làm bài ngay</span>
+                    <ArrowRight className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="bg-white dark:bg-slate-900 p-8 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500">
+              Hiện chưa có bài tập nào được giao cho khối Lớp {user.grade || 4}. Bạn có thể vào mục Luyện tập hoặc Kho bài giảng để tự học nhé!
+            </div>
+          )}
 
           {/* Subjects Grid */}
           <div className="pt-4 space-y-4">
@@ -240,51 +258,56 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               </h2>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              {subjects.map((sub) => (
-                <div
-                  key={sub.id}
-                  onClick={() => onSelectSubject(sub.id)}
-                  className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-slate-400 dark:hover:border-slate-600 transition-all cursor-pointer group shadow-sm"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div
-                      className="w-10 h-10 rounded-xl flex items-center justify-center text-white"
-                      style={{ backgroundColor: sub.color }}
-                    >
-                      <BookOpen className="w-5 h-5" />
+            {subjects.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                {subjects.map((sub) => (
+                  <div
+                    key={sub.id}
+                    onClick={() => onSelectSubject(sub.id)}
+                    className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-slate-400 dark:hover:border-slate-600 transition-all cursor-pointer group shadow-sm"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div
+                        className="w-10 h-10 rounded-xl flex items-center justify-center text-white"
+                        style={{ backgroundColor: sub.color }}
+                      >
+                        <BookOpen className="w-5 h-5" />
+                      </div>
+                      <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
+                        {sub.category === 'compulsory' ? 'Bắt buộc' : 'Tự chọn'}
+                      </span>
                     </div>
-                    <span className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-                      {sub.category === 'compulsory' ? 'Bắt buộc' : 'Tự chọn'}
-                    </span>
-                  </div>
 
-                  <h3 className="mt-3 text-base font-bold text-slate-900 dark:text-white group-hover:text-cyan-600 dark:group-hover:text-cyan-400 transition-colors">
-                    {sub.name}
-                  </h3>
-                  <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-2">
-                    {sub.description}
-                  </p>
+                    <h3 className="mt-3 text-base font-bold text-slate-900 dark:text-white group-hover:text-cyan-600 dark:group-hover:text-cyan-400 transition-colors">
+                      {sub.name}
+                    </h3>
+                    <p className="mt-1 text-xs text-slate-500 dark:text-slate-400 line-clamp-2">
+                      {sub.description}
+                    </p>
 
-                  <div className="mt-4 flex items-center justify-between text-xs font-semibold text-cyan-600 dark:text-cyan-400">
-                    <span>Vào kho bài giảng</span>
-                    <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+                    <div className="mt-4 flex items-center justify-between text-xs font-semibold text-cyan-600 dark:text-cyan-400">
+                      <span>Vào kho bài giảng</span>
+                      <ArrowRight className="w-3.5 h-3.5 group-hover:translate-x-1 transition-transform" />
+                    </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-slate-900 p-8 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500">
+                Đang tải danh sách môn học theo chuẩn Chương trình GDPT...
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Right 1 Col: Knowledge Constellation Map & Companion Hub */}
+        {/* Right 1 Col */}
         <div className="space-y-6">
-          {/* Roadmap Card */}
           <div className="bg-gradient-to-br from-slate-900 via-indigo-950 to-slate-900 text-white p-6 rounded-3xl border border-indigo-900/60 shadow-xl space-y-4">
             <div className="flex items-center justify-between">
               <span className="text-xs font-semibold text-cyan-300 uppercase tracking-wider">
                 Bản đồ sao tri thức
               </span>
-              <span className="text-xs font-mono text-indigo-300">Cấp độ 4</span>
+              <span className="text-xs font-mono text-indigo-300">Cấp độ {currentLevel}</span>
             </div>
 
             <h3 className="text-lg font-bold font-display text-white">
@@ -292,10 +315,15 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </h3>
 
             <p className="text-xs text-slate-300 leading-relaxed">
-              Bạn đang ở chòm sao <strong>Phân số huyền bí</strong>. Hoàn thành thêm 2 bài tập để mở khóa trạm không gian tiếp theo!
+              {recentLesson ? (
+                <>
+                  Chặng hiện tại của bạn: <strong>{recentLesson.title}</strong>. Hoàn thành bài tập để tích lũy thêm XP mở khóa chặng mới!
+                </>
+              ) : (
+                'Hoàn thành các bài học và thử thách để mở khóa chòm sao tri thức tiếp theo!'
+              )}
             </p>
 
-            {/* Constellation visual mini-diagram */}
             <div className="relative h-28 bg-black/40 rounded-xl border border-white/10 flex items-center justify-around px-4">
               <div className="flex flex-col items-center gap-1">
                 <div className="w-6 h-6 rounded-full bg-cyan-400 flex items-center justify-center text-slate-950 font-bold text-[10px] ring-4 ring-cyan-400/30">
@@ -306,16 +334,16 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
               <div className="w-12 h-0.5 bg-cyan-400" />
               <div className="flex flex-col items-center gap-1">
                 <div className="w-7 h-7 rounded-full bg-amber-400 flex items-center justify-center text-slate-950 font-bold text-xs ring-4 ring-amber-400/30 animate-pulse">
-                  4
+                  {user.grade || 4}
                 </div>
                 <span className="text-[10px] text-amber-300 font-semibold">Hiện tại</span>
               </div>
               <div className="w-12 h-0.5 bg-slate-700" />
               <div className="flex flex-col items-center gap-1">
                 <div className="w-6 h-6 rounded-full bg-slate-800 text-slate-400 flex items-center justify-center text-[10px]">
-                  5
+                  {(user.grade || 4) + 1 <= 5 ? (user.grade || 4) + 1 : '★'}
                 </div>
-                <span className="text-[10px] text-slate-500">Quy đồng</span>
+                <span className="text-[10px] text-slate-500">Nâng cao</span>
               </div>
             </div>
 
@@ -328,7 +356,6 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </button>
           </div>
 
-          {/* EduBot AI Quick Help Card */}
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-4">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 rounded-xl bg-cyan-50 dark:bg-cyan-950/60 text-cyan-500 flex items-center justify-center">
@@ -345,7 +372,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             </div>
 
             <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
-              "EduBot ơi, tại sao khi nhân cả tử và mẫu với 2 thì phân số lại bằng nhau?"
+              {recentLesson
+                ? `"EduBot ơi, giảng giúp tớ phần trọng tâm của bài ${recentLesson.title} với!"`
+                : '"EduBot ơi, cho tớ một ví dụ thực tế thật dễ hiểu nhé!"'}
             </p>
 
             <button

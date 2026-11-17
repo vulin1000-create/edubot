@@ -4,13 +4,13 @@
  */
 
 import React from 'react';
-import { Bot, Sparkles, BookOpen, School, ShieldCheck, ArrowRight, Award, Compass, Layers, CheckCircle2 } from 'lucide-react';
+import { Bot, Sparkles, BookOpen, School, ShieldCheck, ArrowRight, Compass, Layers } from 'lucide-react';
 import { EduBotMascot } from './EduBotMascot.tsx';
 import { UserRole } from '../types/index.ts';
 
 interface LandingPageProps {
   onEnterRole: (role: UserRole, grade?: number) => void;
-  onOpenAuth: (mode?: 'login' | 'register') => void;
+  onOpenAuth: (mode?: 'login' | 'register', suggestedRole?: UserRole) => void;
   onExploreCurriculum: () => void;
 }
 
@@ -20,7 +20,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
   onExploreCurriculum,
 }) => {
   const heroSpaceImage = '/src/assets/images/future_learning_space_1793780439282.jpg';
-  const teacherStudioImage = '/src/assets/images/edubot_teacher_studio_1793780438619.jpg';
 
   return (
     <div className="space-y-16 pb-20">
@@ -125,7 +124,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          {/* Pillar 1 */}
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-sm hover:border-cyan-400 transition-colors">
             <div className="w-10 h-10 rounded-xl bg-cyan-50 dark:bg-cyan-950/60 text-cyan-500 flex items-center justify-center">
               <BookOpen className="w-5 h-5" />
@@ -138,7 +136,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </p>
           </div>
 
-          {/* Pillar 2 */}
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-sm hover:border-emerald-400 transition-colors">
             <div className="w-10 h-10 rounded-xl bg-emerald-50 dark:bg-emerald-950/60 text-emerald-500 flex items-center justify-center">
               <School className="w-5 h-5" />
@@ -151,7 +148,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </p>
           </div>
 
-          {/* Pillar 3 */}
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-sm hover:border-purple-400 transition-colors">
             <div className="w-10 h-10 rounded-xl bg-purple-50 dark:bg-purple-950/60 text-purple-500 flex items-center justify-center">
               <Compass className="w-5 h-5" />
@@ -164,7 +160,6 @@ export const LandingPage: React.FC<LandingPageProps> = ({
             </p>
           </div>
 
-          {/* Pillar 4 */}
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-3 shadow-sm hover:border-amber-400 transition-colors">
             <div className="w-10 h-10 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-500 flex items-center justify-center">
               <ShieldCheck className="w-5 h-5" />

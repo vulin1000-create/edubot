@@ -4,22 +4,24 @@
  */
 
 import React, { useState } from 'react';
-import { Sparkles, FileText, CheckCircle2, Copy, RefreshCw, Send, Check } from 'lucide-react';
+import { Sparkles, FileText, CheckCircle2, Copy, RefreshCw, Check, AlertCircle } from 'lucide-react';
 import { AiDraftItem } from '../../types/index.ts';
 
 interface AiLessonPlannerProps {
+  authToken?: string | null;
   onDraftCreated: (draft: AiDraftItem) => void;
 }
 
-export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ onDraftCreated }) => {
+export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ authToken, onDraftCreated }) => {
   const [grade, setGrade] = useState(4);
   const [subject, setSubject] = useState('toan');
   const [lessonName, setLessonName] = useState('Phân số bằng nhau và tính chất cơ bản của phân số');
   const [duration, setDuration] = useState('35 phút (1 tiết)');
   const [teachingMethod, setTeachingMethod] = useState('Phương pháp trực quan, dạy học hợp tác nhóm & Bàn tay nặn bột');
   const [objectives, setObjectives] = useState('Học sinh nhận biết được phân số bằng nhau qua trực quan hình học, nắm vững quy tắc nhân chia tử và mẫu.');
-  
+
   const [isLoading, setIsLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
   const [generatedResult, setGeneratedResult] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -28,11 +30,15 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ onDraftCreated
     e.preventDefault();
     setIsLoading(true);
     setSavedSuccess(false);
+    setErrorMsg('');
 
     try {
       const res = await fetch('/api/ai/teacher/lesson-plan', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
         body: JSON.stringify({
           grade,
           subject,
@@ -44,13 +50,15 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ onDraftCreated
       });
 
       const data = await res.json();
-      if (data.success && data.draft) {
+      if (res.ok && data.success && data.draft) {
         setGeneratedResult(data.draft.content.text);
         onDraftCreated(data.draft);
         setSavedSuccess(true);
+      } else {
+        setErrorMsg(data.error || 'Không thể tạo bản nháp giáo án từ Gemini AI.');
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      setErrorMsg('Lỗi kết nối tới máy chủ AI. Vui lòng thử lại.');
     } finally {
       setIsLoading(false);
     }
@@ -65,7 +73,6 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ onDraftCreated
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 pb-16">
-      {/* Header */}
       <div className="bg-gradient-to-r from-emerald-950 via-slate-900 to-emerald-950 text-white p-6 sm:p-8 rounded-3xl border border-emerald-800/40 shadow-xl space-y-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-emerald-400">
           <Sparkles className="w-4 h-4" />
@@ -75,13 +82,19 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ onDraftCreated
           Trợ lý Soạn Kế Hoạch Bài Dạy (KHBD / Giáo Án)
         </h1>
         <p className="text-xs sm:text-sm text-slate-300 max-w-2xl">
-          Tự động thiết kế tiến trình dạy học 4 bước (Khởi động · Khám phá · Luyện tập · Vận dụng) chuẩn hóa theo 
+          Tự động thiết kế tiến trình dạy học 4 bước (Khởi động · Khám phá · Luyện tập · Vận dụng) chuẩn hóa theo
           <strong> Công văn 2345/BGDĐT</strong> và <strong>Thông tư 32/2018/TT-BGDĐT</strong>.
         </p>
       </div>
 
+      {errorMsg && (
+        <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Form Inputs (5 cols) */}
         <div className="lg:col-span-5 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <h2 className="text-base font-bold text-slate-900 dark:text-white font-display">
             Thông số kế hoạch tiết dạy
@@ -193,7 +206,6 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ onDraftCreated
           </form>
         </div>
 
-        {/* Output Display (7 cols) */}
         <div className="lg:col-span-7 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4 flex flex-col justify-between">
           <div>
             <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
@@ -205,15 +217,13 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ onDraftCreated
               </div>
 
               {generatedResult && (
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={handleCopy}
-                    className="p-1.5 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-1"
-                  >
-                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copied ? 'Đã sao chép' : 'Sao chép'}</span>
-                  </button>
-                </div>
+                <button
+                  onClick={handleCopy}
+                  className="p-1.5 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-1"
+                >
+                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                  <span>{copied ? 'Đã sao chép' : 'Sao chép'}</span>
+                </button>
               )}
             </div>
 

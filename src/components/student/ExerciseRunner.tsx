@@ -9,9 +9,9 @@ import { EduBotMascot } from '../EduBotMascot.tsx';
 import {
   ArrowLeft,
   CheckCircle,
+  XCircle,
   HelpCircle,
   Timer,
-  Award,
   Sparkles,
   ChevronRight,
   RotateCcw,
@@ -24,8 +24,55 @@ interface ExerciseRunnerProps {
   studentId: string;
   studentName: string;
   grade: number;
+  authToken?: string | null;
+  onRequireAuth?: () => void;
   onBack: () => void;
   onSubmittedSuccess: (submission: StudentSubmission, xpEarned: number) => void;
+}
+
+function evaluateQuestionCorrectness(q: Question, studentAns: any): boolean {
+  if (q.type === 'single_choice') {
+    return studentAns !== undefined && studentAns !== null && Number(studentAns) === Number(q.correctAnswer);
+  }
+  if (q.type === 'multi_choice') {
+    if (!Array.isArray(studentAns) || !Array.isArray(q.correctAnswer)) return false;
+    const sSorted = [...studentAns].map(Number).sort((a, b) => a - b);
+    const cSorted = [...q.correctAnswer].map(Number).sort((a, b) => a - b);
+    return sSorted.length === cSorted.length && sSorted.every((v, i) => v === cSorted[i]);
+  }
+  if (q.type === 'true_false') {
+    return typeof studentAns === 'boolean' && studentAns === Boolean(q.correctAnswer);
+  }
+  if (q.type === 'fill_blank' || q.type === 'step_math' || q.type === 'short_answer') {
+    const cleanStudent = String(studentAns || '').trim().toLowerCase().replace(/\s+/g, '');
+    const cleanCorrect = String(q.correctAnswer || '').trim().toLowerCase().replace(/\s+/g, '');
+    return cleanStudent.length > 0 && cleanStudent === cleanCorrect;
+  }
+  if (q.type === 'matching') {
+    if (typeof studentAns !== 'object' || studentAns === null) return false;
+    const correctMap = q.correctAnswer as Record<string, string>;
+    return Object.keys(correctMap).every((k) => studentAns[k] === correctMap[k]);
+  }
+  return false;
+}
+
+function formatStudentAnswer(q: Question, studentAns: any): string {
+  if (studentAns === undefined || studentAns === null || studentAns === '') {
+    return 'Chưa trả lời';
+  }
+  if (q.type === 'single_choice' && q.options) {
+    return q.options[Number(studentAns)] || 'Chưa trả lời';
+  }
+  if (q.type === 'multi_choice' && q.options && Array.isArray(studentAns)) {
+    return studentAns.map((idx) => q.options?.[Number(idx)]).filter(Boolean).join(', ') || 'Chưa chọn';
+  }
+  if (q.type === 'true_false') {
+    return studentAns ? 'ĐÚNG' : 'SAI';
+  }
+  if (q.type === 'matching' && typeof studentAns === 'object') {
+    return Object.entries(studentAns).map(([k, v]) => `${k} → ${v || '?'}`).join('; ');
+  }
+  return String(studentAns);
 }
 
 export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
@@ -34,6 +81,8 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
   studentId,
   studentName,
   grade,
+  authToken,
+  onRequireAuth,
   onBack,
   onSubmittedSuccess,
 }) => {
@@ -42,10 +91,20 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
   const [showHint, setShowHint] = useState<Record<string, boolean>>({});
   const [secondsSpent, setSecondsSpent] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState('');
   const [submissionResult, setSubmissionResult] = useState<{
     submission: StudentSubmission;
     xpEarned: number;
   } | null>(null);
+
+  useEffect(() => {
+    setCurrentIdx(0);
+    setAnswers({});
+    setShowHint({});
+    setSecondsSpent(0);
+    setSubmitError('');
+    setSubmissionResult(null);
+  }, [exercise.id]);
 
   // Timer tick
   useEffect(() => {
@@ -55,6 +114,20 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
     }, 1000);
     return () => clearInterval(interval);
   }, [submissionResult]);
+
+  if (!exercise.questions || exercise.questions.length === 0) {
+    return (
+      <div className="max-w-3xl mx-auto bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center space-y-4">
+        <p className="text-sm text-slate-500">Bộ bài tập này chưa có câu hỏi nào.</p>
+        <button
+          onClick={onBack}
+          className="px-4 py-2 text-xs font-semibold text-white bg-cyan-600 rounded-xl"
+        >
+          Quay lại
+        </button>
+      </div>
+    );
+  }
 
   const currentQ: Question = exercise.questions[currentIdx];
   const totalQ = exercise.questions.length;
@@ -70,12 +143,30 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
     setAnswers((prev) => ({ ...prev, [qId]: val }));
   };
 
+  const handleToggleMultiChoice = (qId: string, optIdx: number) => {
+    const current: number[] = Array.isArray(answers[qId]) ? answers[qId] : [];
+    const next = current.includes(optIdx)
+      ? current.filter((i) => i !== optIdx)
+      : [...current, optIdx];
+    handleSetAnswer(qId, next);
+  };
+
   const handleSubmit = async () => {
+    if (!authToken) {
+      setSubmitError('Vui lòng đăng nhập tài khoản học sinh để nộp bài và lưu điểm XP.');
+      onRequireAuth?.();
+      return;
+    }
+
     setIsSubmitting(true);
+    setSubmitError('');
     try {
       const res = await fetch('/api/exercises/submit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
         body: JSON.stringify({
           exerciseSetId: exercise.id,
           assignmentId,
@@ -87,26 +178,26 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
         }),
       });
       const data = await res.json();
-      if (data.success) {
+      if (res.ok && data.success) {
         setSubmissionResult({
           submission: data.submission,
           xpEarned: data.xpEarned,
         });
         onSubmittedSuccess(data.submission, data.xpEarned);
+      } else {
+        setSubmitError(data.error || 'Không thể nộp bài lúc này. Vui lòng thử lại.');
       }
-    } catch (e) {
-      console.error(e);
+    } catch {
+      setSubmitError('Lỗi kết nối tới máy chủ chấm điểm. Vui lòng thử lại.');
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // If already finished, display Results & Step-by-Step Explanations
   if (submissionResult) {
     const sub = submissionResult.submission;
     return (
       <div className="max-w-3xl mx-auto space-y-6 pb-16">
-        {/* Celebration Header Card */}
         <div className="bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center shadow-lg space-y-4">
           <div className="flex justify-center">
             <EduBotMascot
@@ -128,13 +219,11 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
             </p>
           </div>
 
-          {/* XP Reward Chip */}
           <div className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-700 dark:text-amber-300 font-bold text-sm">
             <Sparkles className="w-4 h-4 text-amber-500" />
             <span>+{submissionResult.xpEarned} Điểm Kinh Nghiệm (XP) nạp vào EduBot</span>
           </div>
 
-          {/* Misconceptions diagnostic */}
           {sub.misconceptionTags && sub.misconceptionTags.length > 0 && (
             <div className="mt-4 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 text-left border border-slate-200 dark:border-slate-700 space-y-2">
               <div className="flex items-center gap-2 text-xs font-bold text-amber-600 dark:text-amber-400">
@@ -154,7 +243,7 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
               onClick={onBack}
               className="px-5 py-2.5 text-xs sm:text-sm font-semibold text-white bg-slate-900 dark:bg-white dark:text-slate-900 rounded-xl hover:bg-slate-800 dark:hover:bg-slate-100 transition-colors"
             >
-              Hoàn thành & Về trang chủ
+              Hoàn thành & Quay lại
             </button>
             <button
               onClick={() => {
@@ -178,15 +267,31 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
           </h3>
           {exercise.questions.map((q, idx) => {
             const studentAns = sub.answers[q.id];
+            const isCorrect = evaluateQuestionCorrectness(q, studentAns);
             return (
               <div
                 key={q.id}
-                className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3"
+                className={`bg-white dark:bg-slate-900 p-5 rounded-2xl border space-y-3 ${
+                  isCorrect
+                    ? 'border-emerald-200 dark:border-emerald-900/60'
+                    : 'border-rose-200 dark:border-rose-900/60'
+                }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-slate-400 font-mono">
-                    Câu {idx + 1}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold text-slate-400 font-mono">Câu {idx + 1}</span>
+                    {isCorrect ? (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 dark:text-emerald-400">
+                        <CheckCircle className="w-3.5 h-3.5" />
+                        Chính xác
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-600 dark:text-rose-400">
+                        <XCircle className="w-3.5 h-3.5" />
+                        Cần xem lại
+                      </span>
+                    )}
+                  </div>
                   <span className="text-xs font-semibold text-cyan-600 dark:text-cyan-400">
                     {q.difficulty === 'nhan_biet'
                       ? 'Nhận biết'
@@ -197,6 +302,9 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
                 </div>
                 <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
                   {q.questionText}
+                </div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  <strong>Câu trả lời của bạn:</strong> {formatStudentAnswer(q, studentAns)}
                 </div>
                 <div className="text-xs text-slate-600 dark:text-slate-300 bg-slate-50 dark:bg-slate-800/60 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
                   <strong className="block text-cyan-600 dark:text-cyan-400 mb-1">
@@ -212,7 +320,6 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
     );
   }
 
-  // Active Quiz Runner Interface
   return (
     <div className="max-w-3xl mx-auto space-y-6 pb-16">
       {/* Top Header Bar */}
@@ -245,6 +352,13 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
         />
       </div>
 
+      {submitError && (
+        <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{submitError}</span>
+        </div>
+      )}
+
       {/* Question Card */}
       <div className="bg-white dark:bg-slate-900 p-6 sm:p-8 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-6">
         <div className="space-y-2">
@@ -259,7 +373,6 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
           </h2>
         </div>
 
-        {/* Question Options by Type */}
         <div className="space-y-3">
           {/* 1. Single Choice */}
           {currentQ.type === 'single_choice' && currentQ.options && (
@@ -284,6 +397,39 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
                       }`}
                     >
                       {String.fromCharCode(65 + optIdx)}
+                    </span>
+                    <span>{opt}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+
+          {/* 1b. Multi Choice */}
+          {currentQ.type === 'multi_choice' && currentQ.options && (
+            <div className="space-y-2.5">
+              <div className="text-xs text-slate-500">Chọn tất cả các đáp án đúng:</div>
+              {currentQ.options.map((opt, optIdx) => {
+                const selectedList: number[] = Array.isArray(answers[currentQ.id]) ? answers[currentQ.id] : [];
+                const isSelected = selectedList.includes(optIdx);
+                return (
+                  <button
+                    key={optIdx}
+                    onClick={() => handleToggleMultiChoice(currentQ.id, optIdx)}
+                    className={`w-full text-left p-4 rounded-xl border text-sm transition-all flex items-center gap-3.5 ${
+                      isSelected
+                        ? 'border-cyan-500 bg-cyan-50/70 dark:bg-cyan-950/40 text-cyan-900 dark:text-cyan-200 font-semibold shadow-sm'
+                        : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 text-slate-700 dark:text-slate-200'
+                    }`}
+                  >
+                    <span
+                      className={`w-5 h-5 rounded-md border flex items-center justify-center text-xs font-semibold shrink-0 ${
+                        isSelected
+                          ? 'bg-cyan-500 border-cyan-500 text-white'
+                          : 'border-slate-300 dark:border-slate-600'
+                      }`}
+                    >
+                      {isSelected ? '✓' : ''}
                     </span>
                     <span>{opt}</span>
                   </button>
@@ -389,7 +535,7 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
           )}
         </div>
 
-        {/* Pedagogical Hint Toggle (Socratic) */}
+        {/* Pedagogical Hint Toggle */}
         <div className="pt-2">
           <button
             onClick={() => setShowHint((prev) => ({ ...prev, [currentQ.id]: !prev[currentQ.id] }))}

@@ -3,9 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import dotenv from 'dotenv';
 import path from 'path';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { GoogleGenAI } from '@google/genai';
 import {
@@ -23,6 +24,7 @@ import {
 } from './server/data.ts';
 import {
   User,
+  UserRole,
   CurriculumSubject,
   CurriculumTopic,
   Lesson,
@@ -32,7 +34,9 @@ import {
   StudentSubmission,
   AiDraftItem,
   AuditLog,
-  KnowledgeNode
+  KnowledgeNode,
+  SystemSettings,
+  AiChatMessage
 } from './src/types/index.ts';
 
 dotenv.config();
@@ -45,19 +49,104 @@ const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
 
-// In-Memory Database Store
-let users: User[] = [...initialUsers];
+// ----------------- SECURITY & CRYPTO HELPERS -----------------
+const TOKEN_SECRET = process.env.SESSION_SECRET || 'edubot-ai-session-secret-2026';
+const TOKEN_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days
+
+function hashPassword(password: string, salt?: string): string {
+  const usedSalt = salt || crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(password, usedSalt, 64).toString('hex');
+  return `${usedSalt}:${derived}`;
+}
+
+function verifyPassword(password: string, storedHash: string): boolean {
+  const parts = storedHash.split(':');
+  if (parts.length !== 2) return false;
+  const [salt, keyHex] = parts;
+  const keyBuf = Buffer.from(keyHex, 'hex');
+  const derivedBuf = crypto.scryptSync(password, salt, 64);
+  if (keyBuf.length !== derivedBuf.length) return false;
+  return crypto.timingSafeEqual(keyBuf, derivedBuf);
+}
+
+interface TokenPayload {
+  sub: string;
+  role: UserRole;
+  exp: number;
+  jti: string;
+}
+
+function signToken(user: User): string {
+  const payload: TokenPayload = {
+    sub: user.id,
+    role: user.role,
+    exp: Date.now() + TOKEN_TTL_MS,
+    jti: crypto.randomUUID(),
+  };
+  const payloadB64 = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const sig = crypto.createHmac('sha256', TOKEN_SECRET).update(payloadB64).digest('base64url');
+  return `${payloadB64}.${sig}`;
+}
+
+const revokedTokenIds = new Set<string>();
+
+function verifyToken(token: string): TokenPayload | null {
+  try {
+    const parts = token.split('.');
+    if (parts.length !== 2) return null;
+    const [payloadB64, sig] = parts;
+    const expectedSig = crypto.createHmac('sha256', TOKEN_SECRET).update(payloadB64).digest('base64url');
+    const sigBuf = Buffer.from(sig);
+    const expectedBuf = Buffer.from(expectedSig);
+    if (sigBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(sigBuf, expectedBuf)) {
+      return null;
+    }
+    const payload = JSON.parse(Buffer.from(payloadB64, 'base64url').toString('utf8')) as TokenPayload;
+    if (!payload.sub || !payload.exp || Date.now() > payload.exp) return null;
+    if (revokedTokenIds.has(payload.jti)) return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeUser(user: User): User {
+  const { ...safe } = user;
+  return safe;
+}
+
+interface AuthenticatedRequest extends Request {
+  authUser?: User;
+  tokenPayload?: TokenPayload;
+}
+
+// In-Memory Database Store (explicitly volatile without Firebase/Cloud SQL)
+let users: User[] = initialUsers.map((u) => ({ ...u }));
+const passwordHashes = new Map<string, string>();
+const DEFAULT_DEMO_PASSWORDS: Record<string, string> = {
+  'admin@edubot.edu.vn': process.env.DEMO_ADMIN_PASSWORD || 'edubot2026',
+  'comai@edubot.edu.vn': process.env.DEMO_TEACHER_PASSWORD || 'edubot2026',
+  'tuan.nh@edubot.edu.vn': process.env.DEMO_STUDENT_PASSWORD || 'edubot2026',
+};
+for (const u of users) {
+  const initialPw = DEFAULT_DEMO_PASSWORDS[u.email.toLowerCase()] || 'edubot2026';
+  passwordHashes.set(u.id, hashPassword(initialPw));
+}
+
+const otpStore = new Map<string, { code: string; expiresAt: number }>();
+const studentChatHistories = new Map<string, AiChatMessage[]>();
+
 let subjects: CurriculumSubject[] = [...initialSubjects];
 let topics: CurriculumTopic[] = [...initialTopics];
 let lessons: Lesson[] = [...initialLessons];
 let exercises: ExerciseSet[] = [...initialExercises];
-let classes: ClassRoom[] = [...initialClasses];
+let classes: ClassRoom[] = initialClasses.map((c) => ({ ...c, students: [...c.students] }));
 let assignments: Assignment[] = [...initialAssignments];
 let submissions: StudentSubmission[] = [...initialSubmissions];
 let aiDrafts: AiDraftItem[] = [...initialDrafts];
 let auditLogs: AuditLog[] = [...initialAuditLogs];
 let knowledgeNodes: KnowledgeNode[] = [...initialKnowledgeNodes];
-let systemSettings = {
+let systemSettings: SystemSettings = {
   childSafetyFilterEnabled: true,
   parentalConsentRequired: true,
   dataRetentionDays: 365,
@@ -66,6 +155,40 @@ let systemSettings = {
   curriculumVersionYear: 2026,
   maintenanceMode: false
 };
+
+// Authentication & RBAC Middleware
+function authenticateRequest(req: AuthenticatedRequest, res: Response, next: NextFunction) {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ error: 'Vui lòng đăng nhập để truy cập tài nguyên này.' });
+  }
+  const token = authHeader.slice(7).trim();
+  const payload = verifyToken(token);
+  if (!payload) {
+    return res.status(401).json({ error: 'Phiên đăng nhập đã hết hạn hoặc không hợp lệ.' });
+  }
+  const user = users.find((u) => u.id === payload.sub);
+  if (!user) {
+    return res.status(401).json({ error: 'Tài khoản không tồn tại trong hệ thống.' });
+  }
+  req.authUser = user;
+  req.tokenPayload = payload;
+  next();
+}
+
+function requireRole(...allowedRoles: UserRole[]) {
+  return (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
+    if (!req.authUser) {
+      return res.status(401).json({ error: 'Chưa xác thực người dùng.' });
+    }
+    if (!allowedRoles.includes(req.authUser.role)) {
+      return res.status(403).json({
+        error: `Bạn không có quyền thực hiện thao tác này (Yêu cầu vai trò: ${allowedRoles.join(', ')}).`
+      });
+    }
+    next();
+  };
+}
 
 // Gemini AI Client Initialization (Server-side only)
 const ai = new GoogleGenAI({
@@ -77,7 +200,13 @@ const ai = new GoogleGenAI({
   },
 });
 
-function addAuditLog(action: string, user: string, role: string, details: string, status: 'success' | 'warning' | 'info' = 'info') {
+function addAuditLog(
+  action: string,
+  user: string,
+  role: string,
+  details: string,
+  status: 'success' | 'warning' | 'info' = 'info'
+) {
   auditLogs.unshift({
     id: `log-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
     action,
@@ -91,61 +220,70 @@ function addAuditLog(action: string, user: string, role: string, details: string
 
 // ----------------- AUTHENTICATION ROUTES -----------------
 app.post('/api/auth/login', (req: Request, res: Response) => {
-  const { email, role } = req.body;
-  let user = users.find(u => u.email.toLowerCase() === email?.toLowerCase());
-  
-  if (!user && role) {
-    // If not found, find first user with requested role or create session
-    user = users.find(u => u.role === role);
+  const { email, password } = req.body;
+  if (!email || !password) {
+    return res.status(400).json({ error: 'Vui lòng nhập đầy đủ email và mật khẩu.' });
   }
 
+  const user = users.find((u) => u.email.toLowerCase() === String(email).trim().toLowerCase());
   if (!user) {
-    user = users[1]; // default to teacher
+    return res.status(401).json({ error: 'Email hoặc mật khẩu không chính xác.' });
   }
 
-  res.json({ success: true, user });
-});
+  const storedHash = passwordHashes.get(user.id);
+  if (!storedHash || !verifyPassword(String(password), storedHash)) {
+    addAuditLog(
+      'Đăng nhập thất bại',
+      user.email,
+      user.role,
+      'Nhập sai mật khẩu khi đăng nhập.',
+      'warning'
+    );
+    return res.status(401).json({ error: 'Email hoặc mật khẩu không chính xác.' });
+  }
 
-app.post('/api/auth/switch-role', (req: Request, res: Response) => {
-  const { role, grade } = req.body;
-  let targetUser = users.find(u => u.role === role);
-  if (role === 'student' && grade) {
-    const studentWithGrade = users.find(u => u.role === 'student' && u.grade === Number(grade));
-    if (studentWithGrade) targetUser = studentWithGrade;
-  }
-  
-  if (!targetUser) {
-    targetUser = users[0];
-  }
-  res.json({ success: true, user: targetUser });
+  const token = signToken(user);
+  addAuditLog('Đăng nhập hệ thống', user.email, user.role, `Người dùng ${user.name} đăng nhập thành công.`, 'info');
+  res.json({ success: true, user: sanitizeUser(user), token });
 });
 
 app.post('/api/auth/register', (req: Request, res: Response) => {
-  const { name, email, role, grade, school } = req.body;
-  if (!name || !email) {
-    return res.status(400).json({ error: 'Vui lòng cung cấp đầy đủ họ tên và email.' });
+  const { name, email, password, role, grade, school } = req.body;
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: 'Vui lòng cung cấp đầy đủ họ tên, email và mật khẩu.' });
   }
 
-  const existing = users.find(u => u.email.toLowerCase() === email.toLowerCase());
+  if (String(password).length < 6) {
+    return res.status(400).json({ error: 'Mật khẩu phải có ít nhất 6 ký tự.' });
+  }
+
+  // Prevent self-registration as admin
+  const safeRole: UserRole = role === 'teacher' ? 'teacher' : 'student';
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const existing = users.find((u) => u.email.toLowerCase() === normalizedEmail);
   if (existing) {
-    return res.status(400).json({ error: 'Email này đã được đăng ký tài khoản.' });
+    return res.status(409).json({ error: 'Email này đã được đăng ký tài khoản.' });
   }
 
   const newUser: User = {
     id: `user-${Date.now()}`,
-    name,
-    email,
-    role: role || 'student',
-    grade: role === 'student' ? Number(grade) || 4 : undefined,
-    school: school || 'Trường Tiểu học Thăng Long',
-    avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(name)}`,
-    xp: 100,
-    streakDays: 1,
-    badges: ['Tân binh EduBot'],
+    name: String(name).trim(),
+    email: normalizedEmail,
+    role: safeRole,
+    grade: safeRole === 'student' ? Math.min(5, Math.max(1, Number(grade) || 4)) : undefined,
+    school: school ? String(school).trim() : 'Trường Tiểu học Thăng Long',
+    avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(String(name))}`,
+    xp: safeRole === 'student' ? 100 : undefined,
+    streakDays: safeRole === 'student' ? 1 : undefined,
+    badges: safeRole === 'student' ? ['Tân binh EduBot'] : undefined,
     createdAt: new Date().toISOString()
   };
 
   users.push(newUser);
+  passwordHashes.set(newUser.id, hashPassword(String(password)));
+
+  const token = signToken(newUser);
   addAuditLog(
     'Đăng ký tài khoản mới',
     newUser.email,
@@ -154,87 +292,205 @@ app.post('/api/auth/register', (req: Request, res: Response) => {
     'success'
   );
 
-  res.json({ success: true, user: newUser });
+  res.status(201).json({ success: true, user: sanitizeUser(newUser), token });
+});
+
+app.post('/api/auth/logout', authenticateRequest, (req: AuthenticatedRequest, res: Response) => {
+  if (req.tokenPayload?.jti) {
+    revokedTokenIds.add(req.tokenPayload.jti);
+  }
+  if (req.authUser) {
+    addAuditLog('Đăng xuất hệ thống', req.authUser.email, req.authUser.role, 'Đã kết thúc phiên làm việc an toàn.', 'info');
+  }
+  res.json({ success: true });
+});
+
+app.get('/api/auth/me', authenticateRequest, (req: AuthenticatedRequest, res: Response) => {
+  res.json({ success: true, user: sanitizeUser(req.authUser!) });
 });
 
 app.post('/api/auth/forgot-password', (req: Request, res: Response) => {
   const { email } = req.body;
-  const user = users.find(u => u.email.toLowerCase() === email?.toLowerCase());
+  if (!email) {
+    return res.status(400).json({ error: 'Vui lòng nhập email tài khoản.' });
+  }
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const user = users.find((u) => u.email.toLowerCase() === normalizedEmail);
   if (!user) {
     return res.status(404).json({ error: 'Không tìm thấy tài khoản với email này trong hệ thống.' });
   }
+
+  const code = String(crypto.randomInt(100000, 999999));
+  otpStore.set(normalizedEmail, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
 
   addAuditLog(
     'Yêu cầu đặt lại mật khẩu',
     user.email,
     user.role,
-    `Mã xác nhận bảo mật OTP 6 chữ số đã được gửi tới ${user.email}`,
+    `Đã tạo mã OTP xác thực đặt lại mật khẩu cho ${user.email}`,
     'info'
   );
 
   res.json({
     success: true,
-    message: `Mã OTP xác thực đã được gửi về email ${email}. Vui lòng nhập mã để hoàn tất đổi mật khẩu.`
+    message: `Hệ thống đã tạo mã OTP xác thực cho ${normalizedEmail}. (Môi trường thử nghiệm chưa kết nối máy chủ SMTP — Mã OTP của bạn: ${code})`,
+    devOtpPreview: process.env.NODE_ENV !== 'production' ? code : undefined
   });
 });
 
-app.get('/api/auth/users', (req: Request, res: Response) => {
-  res.json(users);
+app.post('/api/auth/reset-password', (req: Request, res: Response) => {
+  const { email, otpCode, newPassword } = req.body;
+  if (!email || !otpCode || !newPassword) {
+    return res.status(400).json({ error: 'Vui lòng cung cấp đầy đủ email, mã OTP và mật khẩu mới.' });
+  }
+  if (String(newPassword).length < 6) {
+    return res.status(400).json({ error: 'Mật khẩu mới phải có ít nhất 6 ký tự.' });
+  }
+
+  const normalizedEmail = String(email).trim().toLowerCase();
+  const record = otpStore.get(normalizedEmail);
+  if (!record || Date.now() > record.expiresAt || record.code !== String(otpCode).trim()) {
+    return res.status(400).json({ error: 'Mã OTP không chính xác hoặc đã hết hạn.' });
+  }
+
+  const user = users.find((u) => u.email.toLowerCase() === normalizedEmail);
+  if (!user) {
+    return res.status(404).json({ error: 'Tài khoản không tồn tại.' });
+  }
+
+  passwordHashes.set(user.id, hashPassword(String(newPassword)));
+  otpStore.delete(normalizedEmail);
+
+  addAuditLog(
+    'Đặt lại mật khẩu thành công',
+    user.email,
+    user.role,
+    `Người dùng ${user.email} đã đặt lại mật khẩu bằng OTP hợp lệ.`,
+    'success'
+  );
+
+  res.json({ success: true, message: 'Đổi mật khẩu thành công! Vui lòng đăng nhập lại bằng mật khẩu mới.' });
+});
+
+app.get('/api/auth/users', authenticateRequest, requireRole('admin', 'teacher'), (req: AuthenticatedRequest, res: Response) => {
+  if (req.authUser!.role === 'teacher') {
+    // Teachers see only student directory entries needed for class rosters
+    return res.json(users.filter((u) => u.role === 'student').map(sanitizeUser));
+  }
+  res.json(users.map(sanitizeUser));
+});
+
+app.put('/api/auth/users/:id/role', authenticateRequest, requireRole('admin'), (req: AuthenticatedRequest, res: Response) => {
+  const { id } = req.params;
+  const { role, grade } = req.body;
+  if (!['student', 'teacher', 'admin'].includes(role)) {
+    return res.status(400).json({ error: 'Vai trò không hợp lệ.' });
+  }
+  const target = users.find((u) => u.id === id);
+  if (!target) {
+    return res.status(404).json({ error: 'Không tìm thấy người dùng.' });
+  }
+  if (target.id === req.authUser!.id && role !== 'admin') {
+    return res.status(400).json({ error: 'Không thể tự hạ quyền tài khoản Quản trị viên đang đăng nhập.' });
+  }
+
+  const prevRole = target.role;
+  target.role = role;
+  if (role === 'student') {
+    target.grade = Math.min(5, Math.max(1, Number(grade) || target.grade || 4));
+    target.xp = target.xp ?? 100;
+    target.streakDays = target.streakDays ?? 1;
+  }
+
+  addAuditLog(
+    'Phân quyền tài khoản',
+    req.authUser!.email,
+    'admin',
+    `Thay đổi vai trò của ${target.email} từ "${prevRole}" sang "${role}".`,
+    'warning'
+  );
+
+  res.json({ success: true, user: sanitizeUser(target) });
 });
 
 // ----------------- KNOWLEDGE MAP ROUTE -----------------
 app.get('/api/knowledge-map', (req: Request, res: Response) => {
   const { grade, subjectId } = req.query;
   let list = knowledgeNodes;
-  if (grade) list = list.filter(k => k.grade === Number(grade));
-  if (subjectId) list = list.filter(k => k.subjectId === subjectId);
+  if (grade) list = list.filter((k) => k.grade === Number(grade));
+  if (subjectId) list = list.filter((k) => k.subjectId === subjectId);
   res.json(list);
 });
 
 // ----------------- SYSTEM SETTINGS & PRIVACY -----------------
-app.get('/api/system/settings', (req: Request, res: Response) => {
+app.get('/api/system/settings', authenticateRequest, requireRole('admin'), (_req: Request, res: Response) => {
   res.json(systemSettings);
 });
 
-app.put('/api/system/settings', (req: Request, res: Response) => {
-  systemSettings = { ...systemSettings, ...req.body };
+app.put('/api/system/settings', authenticateRequest, requireRole('admin'), (req: AuthenticatedRequest, res: Response) => {
+  const allowedKeys: (keyof SystemSettings)[] = [
+    'childSafetyFilterEnabled',
+    'parentalConsentRequired',
+    'dataRetentionDays',
+    'aiMaxTokensPerDay',
+    'curriculumStandard',
+    'curriculumVersionYear',
+    'maintenanceMode'
+  ];
+
+  const updates: Partial<SystemSettings> = {};
+  for (const key of allowedKeys) {
+    if (req.body[key] !== undefined) {
+      (updates as any)[key] = req.body[key];
+    }
+  }
+
+  systemSettings = { ...systemSettings, ...updates };
   addAuditLog(
     'Cập nhật cấu hình hệ thống',
-    'admin@edubot.edu.vn',
+    req.authUser!.email,
     'admin',
-    'Đã cập nhật chính sách an toàn trẻ em và cấu hình hệ thống GDPT 2026',
+    `Đã cập nhật chính sách an toàn trẻ em & cấu hình hệ thống (${Object.keys(updates).join(', ') || 'không đổi'}).`,
     'warning'
   );
   res.json({ success: true, settings: systemSettings });
 });
 
 // ----------------- STUDENT PERFORMANCE DETAIL -----------------
-app.get('/api/students/:id/performance', (req: Request, res: Response) => {
+app.get('/api/students/:id/performance', authenticateRequest, requireRole('student', 'teacher', 'admin'), (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  const student = users.find(u => u.id === id);
-  if (!student) {
+  if (req.authUser!.role === 'student' && req.authUser!.id !== id) {
+    return res.status(403).json({ error: 'Học sinh chỉ có quyền xem hồ sơ học tập của chính mình.' });
+  }
+
+  const student = users.find((u) => u.id === id);
+  const rosterStudent = classes.flatMap((c) => c.students).find((s) => s.id === id);
+
+  if (!student && !rosterStudent) {
     return res.status(404).json({ error: 'Không tìm thấy học sinh' });
   }
 
-  const studentSubmissions = submissions.filter(s => s.studentId === id);
+  const studentSubmissions = submissions.filter((s) => s.studentId === id);
   const avgScore = studentSubmissions.length > 0
     ? Number((studentSubmissions.reduce((a, b) => a + b.score, 0) / studentSubmissions.length).toFixed(1))
-    : 10;
+    : null;
 
-  const masteredNodes = knowledgeNodes.filter(k => k.status === 'mastered');
-  const availableNodes = knowledgeNodes.filter(k => k.status === 'available');
+  const masteredNodes = knowledgeNodes.filter((k) => k.status === 'mastered');
+  const availableNodes = knowledgeNodes.filter((k) => k.status === 'available');
+  const studentGrade = student?.grade || 4;
 
   res.json({
-    student,
+    student: student ? sanitizeUser(student) : rosterStudent,
     totalSubmissions: studentSubmissions.length,
-    avgScore,
-    xp: student.xp || 850,
-    streakDays: student.streakDays || 7,
-    badges: student.badges || [],
+    avgScore: avgScore ?? 0,
+    hasSubmissions: studentSubmissions.length > 0,
+    xp: student?.xp ?? rosterStudent?.xp ?? 0,
+    streakDays: student?.streakDays ?? 1,
+    badges: student?.badges ?? [],
     masteredNodesCount: masteredNodes.length,
     inProgressNodesCount: availableNodes.length,
     recentSubmissions: studentSubmissions.slice(0, 5),
-    recommendedNextLesson: lessons.find(l => l.grade === (student.grade || 4))?.title || 'Phân số bằng nhau'
+    recommendedNextLesson: lessons.find((l) => l.grade === studentGrade)?.title || 'Phân số bằng nhau'
   });
 });
 
@@ -242,7 +498,7 @@ app.get('/api/students/:id/performance', (req: Request, res: Response) => {
 app.get('/api/curriculum/subjects', (req: Request, res: Response) => {
   const grade = req.query.grade ? Number(req.query.grade) : null;
   if (grade) {
-    const filtered = subjects.filter(s => s.grades.includes(grade));
+    const filtered = subjects.filter((s) => s.grades.includes(grade));
     return res.json(filtered);
   }
   res.json(subjects);
@@ -251,41 +507,44 @@ app.get('/api/curriculum/subjects', (req: Request, res: Response) => {
 app.get('/api/curriculum/topics', (req: Request, res: Response) => {
   const { subjectId, grade } = req.query;
   let list = topics;
-  if (subjectId) list = list.filter(t => t.subjectId === subjectId);
-  if (grade) list = list.filter(t => t.grade === Number(grade));
+  if (subjectId) list = list.filter((t) => t.subjectId === subjectId);
+  if (grade) list = list.filter((t) => t.grade === Number(grade));
   res.json(list);
 });
 
 app.get('/api/curriculum/lessons', (req: Request, res: Response) => {
   const { subjectId, grade, status } = req.query;
   let list = lessons;
-  if (subjectId) list = list.filter(l => l.subjectId === subjectId);
-  if (grade) list = list.filter(l => l.grade === Number(grade));
-  if (status) list = list.filter(l => l.status === status);
+  if (subjectId) list = list.filter((l) => l.subjectId === subjectId);
+  if (grade) list = list.filter((l) => l.grade === Number(grade));
+  if (status) list = list.filter((l) => l.status === status);
   res.json(list);
 });
 
 app.get('/api/curriculum/lessons/:id', (req: Request, res: Response) => {
-  const lesson = lessons.find(l => l.id === req.params.id);
+  const lesson = lessons.find((l) => l.id === req.params.id);
   if (!lesson) {
     return res.status(404).json({ error: 'Không tìm thấy bài học' });
   }
   res.json(lesson);
 });
 
-app.put('/api/curriculum/lessons/:id/status', (req: Request, res: Response) => {
+app.put('/api/curriculum/lessons/:id/status', authenticateRequest, requireRole('admin'), (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  const { status, reviewedBy } = req.body;
-  const lessonIndex = lessons.findIndex(l => l.id === id);
+  const { status } = req.body;
+  if (!['verified', 'pending', 'unverified', 'ai_draft'].includes(status)) {
+    return res.status(400).json({ error: 'Trạng thái bài học không hợp lệ.' });
+  }
+  const lessonIndex = lessons.findIndex((l) => l.id === id);
   if (lessonIndex === -1) {
     return res.status(404).json({ error: 'Bài học không tồn tại' });
   }
   lessons[lessonIndex].status = status;
   addAuditLog(
     'Thẩm định bài học',
-    reviewedBy || 'Quản trị viên',
+    req.authUser!.email,
     'admin',
-    `Đổi trạng thái bài học ${lessons[lessonIndex].title} thành ${status}`,
+    `Đổi trạng thái bài học "${lessons[lessonIndex].title}" thành "${status}"`,
     'success'
   );
   res.json({ success: true, lesson: lessons[lessonIndex] });
@@ -295,26 +554,33 @@ app.put('/api/curriculum/lessons/:id/status', (req: Request, res: Response) => {
 app.get('/api/exercises', (req: Request, res: Response) => {
   const { subjectId, grade, lessonId } = req.query;
   let list = exercises;
-  if (subjectId) list = list.filter(e => e.subjectId === subjectId);
-  if (grade) list = list.filter(e => e.grade === Number(grade));
-  if (lessonId) list = list.filter(e => e.lessonId === lessonId);
+  if (subjectId) list = list.filter((e) => e.subjectId === subjectId);
+  if (grade) list = list.filter((e) => e.grade === Number(grade));
+  if (lessonId) list = list.filter((e) => e.lessonId === lessonId);
   res.json(list);
 });
 
 app.get('/api/exercises/:id', (req: Request, res: Response) => {
-  const exercise = exercises.find(e => e.id === req.params.id);
+  const exercise = exercises.find((e) => e.id === req.params.id);
   if (!exercise) {
     return res.status(404).json({ error: 'Không tìm thấy bài tập' });
   }
   res.json(exercise);
 });
 
-app.post('/api/exercises/submit', (req: Request, res: Response) => {
-  const { exerciseSetId, studentId, studentName, grade, answers, timeSpentSeconds, assignmentId } = req.body;
-  const exercise = exercises.find(e => e.id === exerciseSetId);
+app.post('/api/exercises/submit', authenticateRequest, requireRole('student', 'teacher', 'admin'), (req: AuthenticatedRequest, res: Response) => {
+  const { exerciseSetId, grade, answers, timeSpentSeconds, assignmentId } = req.body;
+  if (!exerciseSetId || !answers || typeof answers !== 'object') {
+    return res.status(400).json({ error: 'Dữ liệu bài nộp không hợp lệ.' });
+  }
+
+  const exercise = exercises.find((e) => e.id === exerciseSetId);
   if (!exercise) {
     return res.status(404).json({ error: 'Bài tập không hợp lệ' });
   }
+
+  const actualStudentId = req.authUser!.role === 'student' ? req.authUser!.id : (req.body.studentId || req.authUser!.id);
+  const actualStudentName = req.authUser!.role === 'student' ? req.authUser!.name : (req.body.studentName || req.authUser!.name);
 
   let totalCorrect = 0;
   const misconceptionTags: string[] = [];
@@ -324,19 +590,23 @@ app.post('/api/exercises/submit', (req: Request, res: Response) => {
     let isCorrect = false;
 
     if (q.type === 'single_choice') {
-      isCorrect = Number(studentAns) === Number(q.correctAnswer);
+      isCorrect = studentAns !== undefined && studentAns !== null && Number(studentAns) === Number(q.correctAnswer);
+    } else if (q.type === 'multi_choice') {
+      if (Array.isArray(studentAns) && Array.isArray(q.correctAnswer)) {
+        const sSorted = [...studentAns].map(Number).sort((a, b) => a - b);
+        const cSorted = [...q.correctAnswer].map(Number).sort((a, b) => a - b);
+        isCorrect = sSorted.length === cSorted.length && sSorted.every((v, idx) => v === cSorted[idx]);
+      }
     } else if (q.type === 'true_false') {
-      isCorrect = Boolean(studentAns) === Boolean(q.correctAnswer);
+      isCorrect = typeof studentAns === 'boolean' && studentAns === Boolean(q.correctAnswer);
     } else if (q.type === 'fill_blank' || q.type === 'step_math' || q.type === 'short_answer') {
       const cleanStudent = String(studentAns || '').trim().toLowerCase().replace(/\s+/g, '');
       const cleanCorrect = String(q.correctAnswer || '').trim().toLowerCase().replace(/\s+/g, '');
-      isCorrect = cleanStudent === cleanCorrect;
+      isCorrect = cleanStudent.length > 0 && cleanStudent === cleanCorrect;
     } else if (q.type === 'matching') {
-      // Matching compare keys
       if (typeof studentAns === 'object' && studentAns !== null) {
         const correctMap = q.correctAnswer as Record<string, string>;
-        const matchAll = Object.keys(correctMap).every(key => studentAns[key] === correctMap[key]);
-        isCorrect = matchAll;
+        isCorrect = Object.keys(correctMap).every((key) => studentAns[key] === correctMap[key]);
       }
     }
 
@@ -353,32 +623,40 @@ app.post('/api/exercises/submit', (req: Request, res: Response) => {
 
   const totalQuestions = exercise.questions.length;
   const score = totalQuestions > 0 ? Number(((totalCorrect / totalQuestions) * 10).toFixed(1)) : 10;
-  const xpEarned = totalCorrect * 20 + 30; // bonus completion XP
+  const xpEarned = totalCorrect * 20 + 30;
 
-  // Update student XP & streak in user store
-  const student = users.find(u => u.id === studentId);
+  // Update student XP & sync into classrooms
+  const student = users.find((u) => u.id === actualStudentId);
   if (student) {
     student.xp = (student.xp || 0) + xpEarned;
+    for (const cls of classes) {
+      const member = cls.students.find((s) => s.id === actualStudentId);
+      if (member) {
+        member.xp = student.xp;
+      }
+    }
   }
 
-  // Update assignment completed count if assigned
+  // Update assignment completedCount only once per student per assignment
   if (assignmentId) {
-    const assign = assignments.find(a => a.id === assignmentId);
-    if (assign && assign.completedCount < assign.totalStudents) {
+    const alreadySubmittedAssignment = submissions.some(
+      (s) => s.assignmentId === assignmentId && s.studentId === actualStudentId
+    );
+    const assign = assignments.find((a) => a.id === assignmentId);
+    if (assign && !alreadySubmittedAssignment && assign.completedCount < assign.totalStudents) {
       assign.completedCount += 1;
     }
   }
 
   // Update Knowledge Node Mastery & Prerequisites Unlock
   if (exercise.lessonId) {
-    const matchedNode = knowledgeNodes.find(k => k.lessonId === exercise.lessonId);
+    const matchedNode = knowledgeNodes.find((k) => k.lessonId === exercise.lessonId);
     if (matchedNode) {
       matchedNode.masteryPercentage = Math.min(100, Math.max(matchedNode.masteryPercentage, Math.round(score * 10)));
       if (score >= 7) {
         matchedNode.status = 'mastered';
-        // unlock next nodes in the graph
-        matchedNode.nextNodes.forEach(nxtId => {
-          const nxtNode = knowledgeNodes.find(k => k.id === nxtId);
+        matchedNode.nextNodes.forEach((nxtId) => {
+          const nxtNode = knowledgeNodes.find((k) => k.id === nxtId);
           if (nxtNode && nxtNode.status === 'locked') {
             nxtNode.status = 'available';
           }
@@ -402,15 +680,15 @@ app.post('/api/exercises/submit', (req: Request, res: Response) => {
     id: `sub-${Date.now()}`,
     assignmentId,
     exerciseSetId,
-    studentId,
-    studentName: studentName || 'Học sinh',
-    grade: Number(grade) || 4,
+    studentId: actualStudentId,
+    studentName: actualStudentName,
+    grade: Number(grade) || exercise.grade,
     answers,
     score,
     totalCorrect,
     totalQuestions,
     completedAt: new Date().toISOString(),
-    timeSpentSeconds: timeSpentSeconds || 180,
+    timeSpentSeconds: timeSpentSeconds || 60,
     feedback,
     misconceptionTags
   };
@@ -419,8 +697,8 @@ app.post('/api/exercises/submit', (req: Request, res: Response) => {
 
   addAuditLog(
     'Nộp bài tập',
-    studentName || 'Học sinh',
-    'student',
+    req.authUser!.email,
+    req.authUser!.role,
     `Hoàn thành bài tập "${exercise.title}" - Điểm: ${score}/10, nhận +${xpEarned} XP.`,
     'success'
   );
@@ -428,69 +706,95 @@ app.post('/api/exercises/submit', (req: Request, res: Response) => {
   res.json({
     success: true,
     submission,
-    xpEarned
+    xpEarned,
+    updatedXp: student?.xp
   });
 });
 
 // ----------------- CLASS & ASSIGNMENTS ROUTES -----------------
-app.get('/api/classes', (req: Request, res: Response) => {
+app.get('/api/classes', authenticateRequest, (_req: Request, res: Response) => {
   res.json(classes);
 });
 
-app.post('/api/classes', (req: Request, res: Response) => {
-  const { name, grade, teacherId, teacherName } = req.body;
+app.post('/api/classes', authenticateRequest, requireRole('teacher', 'admin'), (req: AuthenticatedRequest, res: Response) => {
+  const { name, grade } = req.body;
+  if (!name || !String(name).trim()) {
+    return res.status(400).json({ error: 'Vui lòng nhập tên lớp học.' });
+  }
+  const numericGrade = Math.min(5, Math.max(1, Number(grade) || 4));
   const newClass: ClassRoom = {
     id: `class-${Date.now()}`,
-    code: `EDU-${grade}${String.fromCharCode(65 + Math.floor(Math.random() * 4))}${Math.floor(Math.random() * 9 + 1)}`,
-    name,
-    grade: Number(grade),
-    teacherId: teacherId || 'user-teacher-1',
-    teacherName: teacherName || 'Cô Nguyễn Mai',
-    studentCount: 1,
+    code: `EDU-${numericGrade}${String.fromCharCode(65 + Math.floor(Math.random() * 4))}${Math.floor(Math.random() * 9 + 1)}`,
+    name: String(name).trim(),
+    grade: numericGrade,
+    teacherId: req.authUser!.id,
+    teacherName: req.authUser!.name,
+    studentCount: 0,
     academicYear: '2025 - 2026',
-    students: [
-      { id: 'user-student-1', name: 'Hoàng Tuấn', email: 'tuan.nh@edubot.edu.vn', xp: 850, progress: 85 }
-    ]
+    students: []
   };
   classes.unshift(newClass);
-  addAuditLog('Tạo lớp học', teacherName || 'Giáo viên', 'teacher', `Đã tạo lớp ${newClass.name} (Mã: ${newClass.code})`, 'success');
-  res.json({ success: true, class: newClass });
+  addAuditLog('Tạo lớp học', req.authUser!.email, req.authUser!.role, `Đã tạo lớp ${newClass.name} (Mã: ${newClass.code})`, 'success');
+  res.status(201).json({ success: true, class: newClass });
 });
 
-app.post('/api/classes/join', (req: Request, res: Response) => {
-  const { code, studentId, studentName, email } = req.body;
-  const targetClass = classes.find(c => c.code.toUpperCase() === String(code || '').trim().toUpperCase());
+app.post('/api/classes/join', authenticateRequest, requireRole('student', 'teacher', 'admin'), (req: AuthenticatedRequest, res: Response) => {
+  const { code, classId, studentId, studentEmail } = req.body;
+  const targetClass = classes.find((c) =>
+    (classId && c.id === classId) ||
+    (code && c.code.toUpperCase() === String(code).trim().toUpperCase())
+  );
   if (!targetClass) {
-    return res.status(404).json({ error: 'Mã lớp không hợp lệ hoặc lớp không tồn tại!' });
+    return res.status(404).json({ error: 'Mã lớp hoặc lớp học không hợp lệ.' });
   }
 
-  const alreadyIn = targetClass.students.some(s => s.id === studentId);
+  let targetStudent: User | undefined;
+  if (req.authUser!.role === 'student') {
+    targetStudent = req.authUser!;
+  } else if (studentId) {
+    targetStudent = users.find((u) => u.id === studentId && u.role === 'student');
+  } else if (studentEmail) {
+    targetStudent = users.find((u) => u.email.toLowerCase() === String(studentEmail).trim().toLowerCase() && u.role === 'student');
+  }
+
+  if (!targetStudent) {
+    return res.status(404).json({ error: 'Không tìm thấy tài khoản học sinh để thêm vào lớp.' });
+  }
+
+  const alreadyIn = targetClass.students.some((s) => s.id === targetStudent!.id);
   if (!alreadyIn) {
     targetClass.students.push({
-      id: studentId || `stu-${Date.now()}`,
-      name: studentName || 'Học sinh mới',
-      email: email || 'student@school.edu.vn',
-      xp: 100,
-      progress: 10
+      id: targetStudent.id,
+      name: targetStudent.name,
+      email: targetStudent.email,
+      xp: targetStudent.xp || 100,
+      progress: 0
     });
-    targetClass.studentCount = targetClass.students.length;
+    targetClass.studentCount = Math.max(targetClass.studentCount, targetClass.students.length);
+    addAuditLog(
+      'Thêm học sinh vào lớp',
+      req.authUser!.email,
+      req.authUser!.role,
+      `Học sinh ${targetStudent.name} đã tham gia lớp ${targetClass.name}.`,
+      'info'
+    );
   }
 
   res.json({ success: true, class: targetClass });
 });
 
-app.get('/api/assignments', (req: Request, res: Response) => {
+app.get('/api/assignments', authenticateRequest, (req: Request, res: Response) => {
   const { classId, grade } = req.query;
   let list = assignments;
-  if (classId) list = list.filter(a => a.classId === classId);
-  if (grade) list = list.filter(a => a.grade === Number(grade));
+  if (classId) list = list.filter((a) => a.classId === classId);
+  if (grade) list = list.filter((a) => a.grade === Number(grade));
   res.json(list);
 });
 
-app.post('/api/assignments', (req: Request, res: Response) => {
-  const { classId, exerciseSetId, title, deadline, assignedBy } = req.body;
-  const targetClass = classes.find(c => c.id === classId);
-  const exercise = exercises.find(e => e.id === exerciseSetId);
+app.post('/api/assignments', authenticateRequest, requireRole('teacher', 'admin'), (req: AuthenticatedRequest, res: Response) => {
+  const { classId, exerciseSetId, title, deadline } = req.body;
+  const targetClass = classes.find((c) => c.id === classId);
+  const exercise = exercises.find((e) => e.id === exerciseSetId);
 
   if (!targetClass || !exercise) {
     return res.status(400).json({ error: 'Thông tin lớp hoặc bộ bài tập không hợp lệ' });
@@ -505,7 +809,7 @@ app.post('/api/assignments', (req: Request, res: Response) => {
     subjectId: exercise.subjectId,
     grade: exercise.grade,
     deadline: deadline || new Date(Date.now() + 7 * 86400000).toISOString(),
-    assignedBy: assignedBy || 'Giáo viên',
+    assignedBy: req.authUser!.name,
     maxAttempts: 3,
     status: 'active',
     completedCount: 0,
@@ -513,79 +817,150 @@ app.post('/api/assignments', (req: Request, res: Response) => {
   };
 
   assignments.unshift(newAssignment);
-  addAuditLog('Giao bài tập', assignedBy || 'Giáo viên', 'teacher', `Giao bài "${newAssignment.title}" cho lớp ${targetClass.name}`, 'info');
-  res.json({ success: true, assignment: newAssignment });
+  addAuditLog('Giao bài tập', req.authUser!.email, req.authUser!.role, `Giao bài "${newAssignment.title}" cho lớp ${targetClass.name}`, 'info');
+  res.status(201).json({ success: true, assignment: newAssignment });
 });
 
-app.get('/api/submissions', (req: Request, res: Response) => {
+app.get('/api/submissions', authenticateRequest, (req: AuthenticatedRequest, res: Response) => {
   const { studentId, assignmentId } = req.query;
   let list = submissions;
-  if (studentId) list = list.filter(s => s.studentId === studentId);
-  if (assignmentId) list = list.filter(s => s.assignmentId === assignmentId);
+  if (req.authUser!.role === 'student') {
+    list = list.filter((s) => s.studentId === req.authUser!.id);
+  } else if (studentId) {
+    list = list.filter((s) => s.studentId === studentId);
+  }
+  if (assignmentId) list = list.filter((s) => s.assignmentId === assignmentId);
   res.json(list);
 });
 
 // ----------------- AI DRAFTS & CONTENT MANAGEMENT -----------------
-app.get('/api/ai/drafts', (req: Request, res: Response) => {
+app.get('/api/ai/drafts', authenticateRequest, requireRole('teacher', 'admin'), (_req: Request, res: Response) => {
   res.json(aiDrafts);
 });
 
-app.put('/api/ai/drafts/:id/review', (req: Request, res: Response) => {
+app.put('/api/ai/drafts/:id/review', authenticateRequest, requireRole('teacher', 'admin'), (req: AuthenticatedRequest, res: Response) => {
   const { id } = req.params;
-  const { status, teacherNotes, reviewer } = req.body;
-  const draft = aiDrafts.find(d => d.id === id);
+  const { status, teacherNotes } = req.body;
+  if (!['draft', 'approved', 'rejected', 'published'].includes(status)) {
+    return res.status(400).json({ error: 'Trạng thái kiểm duyệt không hợp lệ.' });
+  }
+  const draft = aiDrafts.find((d) => d.id === id);
   if (!draft) {
     return res.status(404).json({ error: 'Bản nháp không tồn tại' });
   }
   draft.status = status;
-  if (teacherNotes) draft.teacherNotes = teacherNotes;
+  if (teacherNotes !== undefined) {
+    draft.teacherNotes = String(teacherNotes);
+  }
 
   addAuditLog(
     'Kiểm duyệt nội dung AI',
-    reviewer || 'Giáo viên',
-    'teacher',
-    `Đã phê duyệt trạng thái "${status}" cho bản nháp "${draft.title}"`,
-    'success'
+    req.authUser!.email,
+    req.authUser!.role,
+    `Đã cập nhật trạng thái "${status}" cho bản nháp "${draft.title}"`,
+    status === 'rejected' ? 'warning' : 'success'
   );
 
   res.json({ success: true, draft });
 });
 
 // ----------------- AUDIT LOGS -----------------
-app.get('/api/audit-logs', (req: Request, res: Response) => {
+app.get('/api/audit-logs', authenticateRequest, requireRole('admin'), (_req: Request, res: Response) => {
   res.json(auditLogs);
 });
 
 // ----------------- REAL GEMINI AI INTEGRATION -----------------
+const GEMINI_TEXT_MODEL = 'gemini-4-hydrogen';
 
-// Safe Gemini caller with timeout
-async function callGeminiSafe(params: any): Promise<string> {
-  const timeoutPromise = new Promise<string>((_, reject) =>
-    setTimeout(() => reject(new Error('AI_TIMEOUT')), 5000)
+async function callGeminiSafe(params: { model: string; contents: any; config?: any }): Promise<string> {
+  if (!process.env.GEMINI_API_KEY) {
+    const err: any = new Error('Chưa cấu hình GEMINI_API_KEY trên máy chủ.');
+    err.statusCode = 503;
+    err.isMissingKey = true;
+    throw err;
+  }
+
+  const timeoutPromise = new Promise<never>((_, reject) =>
+    setTimeout(() => {
+      const timeoutErr: any = new Error('Kết nối tới Gemini AI quá thời gian phản hồi.');
+      timeoutErr.statusCode = 504;
+      reject(timeoutErr);
+    }, 25000)
   );
+
   const geminiPromise = (async () => {
     const res = await ai.models.generateContent(params);
-    return res.text || '';
+    if (!res.text) {
+      const emptyErr: any = new Error('Gemini AI không trả về nội dung văn bản.');
+      emptyErr.statusCode = 502;
+      throw emptyErr;
+    }
+    return res.text;
   })();
+
   return Promise.race([geminiPromise, timeoutPromise]);
 }
 
-// 1. EduBot Student Tutor AI with RAG
-app.post('/api/ai/student-chat', async (req: Request, res: Response) => {
-  const { message, grade = 4, subject = 'toan', currentLessonId } = req.body;
+function mapGeminiError(error: any): { status: number; message: string } {
+  const status = error?.status || error?.statusCode || 502;
+  const raw = String(error?.message || '');
+  if (error?.isMissingKey) {
+    return { status: 503, message: 'Máy chủ chưa được cấu hình GEMINI_API_KEY. Vui lòng thiết lập khóa trong Settings > Secrets.' };
+  }
+  if (status === 503 || raw.includes('UNAVAILABLE')) {
+    return { status: 503, message: 'Dịch vụ Gemini AI tạm thời quá tải hoặc chưa khả dụng (503). Vui lòng thử lại sau ít giây.' };
+  }
+  if (status === 504) {
+    return { status: 504, message: 'Hệ thống AI phản hồi chậm (timeout). Vui lòng thử lại sau ít giây.' };
+  }
+  if (raw.includes('PERMISSION_DENIED') || raw.includes('API_KEY_INVALID') || status === 400 || status === 403) {
+    return { status: 502, message: 'Khóa API Gemini không hợp lệ hoặc bị từ chối quyền. Vui lòng kiểm tra Settings > Secrets.' };
+  }
+  if (raw.includes('RESOURCE_EXHAUSTED') || status === 429) {
+    return { status: 429, message: 'Đã vượt giới hạn lượt gọi Gemini AI hiện tại. Vui lòng thử lại sau ít phút.' };
+  }
+  return { status: 502, message: `Lỗi dịch vụ AI Gemini: ${raw || 'Không thể xử lý yêu cầu lúc này.'}` };
+}
 
-  // RAG Retrieval: find matching curriculum lessons
-  const relevantLessons = lessons.filter(l => l.grade === Number(grade) && (l.subjectId === subject || !subject));
-  const matchedLesson = lessons.find(l => l.id === currentLessonId) || relevantLessons[0];
+// 1. EduBot Student Tutor AI with RAG + History Persistence
+app.get('/api/ai/student-chat/history', authenticateRequest, (req: AuthenticatedRequest, res: Response) => {
+  const history = studentChatHistories.get(req.authUser!.id) || [];
+  res.json({ history });
+});
+
+app.delete('/api/ai/student-chat/history', authenticateRequest, (req: AuthenticatedRequest, res: Response) => {
+  studentChatHistories.delete(req.authUser!.id);
+  res.json({ success: true });
+});
+
+app.post('/api/ai/student-chat', authenticateRequest, async (req: AuthenticatedRequest, res: Response) => {
+  const { message, grade = 4, subject = 'toan', currentLessonId } = req.body;
+  if (!message || !String(message).trim()) {
+    return res.status(400).json({ error: 'Vui lòng nhập câu hỏi gửi EduBot.' });
+  }
+
+  // RAG Retrieval strictly from VERIFIED curriculum lessons when possible
+  const verifiedLessons = lessons.filter((l) => l.status === 'verified');
+  const relevantLessons = verifiedLessons.filter(
+    (l) => l.grade === Number(grade) && (l.subjectId === subject || !subject)
+  );
+  const matchedLesson =
+    verifiedLessons.find((l) => l.id === currentLessonId) || relevantLessons[0];
 
   const contextSnippet = matchedLesson
-    ? `[HỌC LIỆU CHUẨN THÔNG TƯ 32/2018 & TT 17/2025/TT-BGDĐT]
+    ? `[HỌC LIỆU ĐÃ THẨM ĐỊNH - ${matchedLesson.officialReference.docNumber}]
 Tên bài: ${matchedLesson.title} (Mã: ${matchedLesson.lessonCode}, Môn: ${matchedLesson.subjectId}, Lớp: ${matchedLesson.grade})
 Yêu cầu cần đạt: ${matchedLesson.objectives.join('; ')}
 Kiến thức cốt lõi: ${matchedLesson.coreKnowledge.join('; ')}
 Lỗi học sinh thường gặp: ${matchedLesson.commonMisconceptions.join('; ')}
 Nguồn thẩm định: ${matchedLesson.officialReference.docNumber} (${matchedLesson.status})`
-    : 'Chương trình Tiểu học tổng thể năm 2026.';
+    : 'Chưa có bài học cụ thể trong kho học liệu đã thẩm định cho môn/lớp này — nếu câu hỏi nằm ngoài tài liệu chuẩn, hãy nói rõ giới hạn và hướng dẫn em hỏi thầy cô giáo.';
+
+  const safetyRule = systemSettings.childSafetyFilterEnabled
+    ? `4. BẢO MẬT & AN TOÀN TRẺ EM (ĐANG BẬT BẮT BUỘC):
+   - Nghiêm cấm hỏi hoặc yêu cầu học sinh cung cấp: họ tên thật của phụ huynh, số điện thoại, mật khẩu, địa chỉ nhà riêng.
+   - Nếu học sinh hỏi chủ đề bạo lực, nguy hại hoặc không lành mạnh cho trẻ em: từ chối lịch sự và khuyên bạn nhỏ tâm sự cùng thầy cô hoặc bố mẹ.`
+    : '';
 
   const systemInstruction = `Bạn là EduBot - Mascot Robot 3D gia sư thông minh, ấm áp và siêu đáng yêu dành cho học sinh tiểu học Việt Nam (Lớp 1 đến Lớp 5).
 Nhiệm vụ: Giúp học sinh hiểu bài, ham thích học tập, tư duy độc lập và yêu mến kiến thức.
@@ -597,56 +972,91 @@ QUY TẮC SƯ PHẠM BẮT BUỘC:
    - Nêu một ví dụ đời sống thật gần gũi (chiếc bánh, cái kẹo, robot nạp năng lượng).
    - Đặt 1 câu hỏi gợi ý nhỏ để học sinh tự suy nghĩ và trả lời bước tiếp theo.
 3. Khi học sinh trả lời sai hoặc chưa hiểu: Động viên nhẹ nhàng, giải thích bằng lời văn cực kỳ dễ hiểu, chia nhỏ từng bước. Không bao giờ chê bai.
-4. BẢO MẬT & AN TOÀN TRẺ EM:
-   - Nghiêm cấm hỏi hoặc yêu cầu học sinh cung cấp: họ tên thật của phụ huynh, số điện thoại, mật khẩu, địa chỉ nhà riêng.
-   - Nếu học sinh hỏi chủ đề bạo lực, nguy hại hoặc không lành mạnh cho trẻ em: từ chối lịch sự và khuyên bạn nhỏ tâm sự cùng thầy cô hoặc bố mẹ.
-5. Luôn bám sát ngữ cảnh kiến thức chuẩn được cung cấp dưới đây:
+${safetyRule}
+5. Luôn bám sát ngữ cảnh kiến thức chuẩn được cung cấp dưới đây (trình bày ngắn gọn, rõ ràng):
 ${contextSnippet}`;
 
-  try {
-    let replyText = '';
-    if (process.env.GEMINI_API_KEY) {
-      replyText = await callGeminiSafe({
-        model: 'gemini-3.8-flash',
-        contents: message,
-        config: { systemInstruction }
-      });
-    }
+  const priorHistory = studentChatHistories.get(req.authUser!.id) || [];
+  const recentTurns = priorHistory.slice(-6).map((m) => `${m.sender === 'student' ? 'Học sinh' : 'EduBot'}: ${m.text}`).join('\n');
+  const fullPrompt = recentTurns
+    ? `Lịch sử trò chuyện gần đây:\n${recentTurns}\n\nCâu hỏi mới của học sinh Lớp ${grade}:\n${String(message).trim()}`
+    : String(message).trim();
 
-    if (!replyText) {
-      replyText = `Chào bạn nhỏ! 🤖 EduBot rất vui được đồng hành cùng bạn học bài "${matchedLesson?.title || 'Toán học vui'}".
-Với câu hỏi của bạn: "${message}", tớ có một gợi ý nho nhỏ: Bạn hãy nhớ lại quy tắc tử số và mẫu số nhé. Mẫu số chỉ tổng số phần, còn tử số chỉ số phần được lấy. Bạn thử áp dụng xem sao nhé!`;
-    }
+  try {
+    const replyText = await callGeminiSafe({
+      model: GEMINI_TEXT_MODEL,
+      contents: fullPrompt,
+      config: { systemInstruction }
+    });
+
+    const userMsg: AiChatMessage = {
+      id: `msg-${Date.now()}`,
+      sender: 'student',
+      text: String(message).trim(),
+      timestamp: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' })
+    };
+
+    const suggestedPrompts = matchedLesson
+      ? [
+          `EduBot cho tớ một ví dụ dễ hiểu hơn về "${matchedLesson.title}" nhé!`,
+          'Tớ muốn làm thử một câu đố nhỏ!',
+          'Tại sao lại có quy tắc này vậy EduBot?'
+        ]
+      : [
+          'EduBot giải thích lại bước đầu tiên giúp tớ nhé!',
+          'Cho tớ một ví dụ thực tế đi EduBot!'
+        ];
+
+    const botMsg: AiChatMessage = {
+      id: `msg-${Date.now() + 1}`,
+      sender: 'edubot',
+      text: replyText,
+      timestamp: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
+      robotExpression: 'happy',
+      referencedLessons: matchedLesson ? [matchedLesson.title] : [],
+      suggestedPrompts
+    };
+
+    studentChatHistories.set(req.authUser!.id, [...priorHistory, userMsg, botMsg]);
+
+    addAuditLog(
+      'Hỏi đáp Gia sư EduBot',
+      req.authUser!.email,
+      req.authUser!.role,
+      `Hỏi đáp môn ${subject} (Lớp ${grade})${matchedLesson ? ` - căn cứ bài "${matchedLesson.title}"` : ''}`,
+      'info'
+    );
 
     res.json({
       text: replyText,
       robotExpression: 'happy',
       referencedLessons: matchedLesson ? [matchedLesson.title] : [],
-      suggestedPrompts: [
-        'EduBot cho tớ một ví dụ dễ hiểu hơn được không?',
-        'Tớ muốn làm thử một câu đố luyện tập!',
-        'Tại sao lại có quy tắc này vậy EduBot?'
-      ]
+      suggestedPrompts,
+      userMessage: userMsg,
+      botMessage: botMsg
     });
   } catch (error: any) {
-    console.error('Error or fallback in student-chat:', error?.message);
-    res.json({
-      text: `Chào bạn nhỏ! 🤖 EduBot đây! Với bài "${matchedLesson?.title || 'Bài học'}", bạn hãy nhớ: Hãy đọc kỹ yêu cầu cần đạt và thử phân tích từ từ từng bước nhé. Tớ luôn ở đây cùng bạn!`,
-      robotExpression: 'explaining',
-      referencedLessons: matchedLesson ? [matchedLesson.title] : [],
-      suggestedPrompts: [
-        'Cho tớ một ví dụ thực tế đi EduBot!',
-        'Quy tắc này áp dụng thế nào?',
-        'Tóm tắt bài học giúp tớ!'
-      ]
-    });
+    console.error('Gemini error in student-chat:', error?.message);
+    const mapped = mapGeminiError(error);
+    res.status(mapped.status).json({ error: mapped.message });
   }
 });
 
-// 2. EduBot Teacher AI - Lesson Plan Generator (Soạn KHBD / Giáo án)
-app.post('/api/ai/teacher/lesson-plan', async (req: Request, res: Response) => {
+// 2. EduBot Teacher AI - Lesson Plan Generator
+app.post('/api/ai/teacher/lesson-plan', authenticateRequest, requireRole('teacher', 'admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { grade = 4, subject = 'toan', lessonName, duration = '35 phút', teachingMethod = 'Dạy học tích cực & Bàn tay nặn bột', objectives } = req.body;
+    const {
+      grade = 4,
+      subject = 'toan',
+      lessonName,
+      duration = '35 phút',
+      teachingMethod = 'Dạy học tích cực & Bàn tay nặn bột',
+      objectives
+    } = req.body;
+
+    if (!lessonName || !String(lessonName).trim()) {
+      return res.status(400).json({ error: 'Vui lòng nhập tên bài dạy.' });
+    }
 
     const systemInstruction = `Bạn là Chuyên gia Phương pháp Dạy học Tiểu học và Trợ lý AI Giáo viên Việt Nam (EduBot Teacher AI).
 Nhiệm vụ: Soạn Kế hoạch bài dạy (Giáo án) theo chuẩn Thông tư 32/2018/TT-BGDĐT và Công văn số 2345/BGDĐT-GDTH của Bộ Giáo dục và Đào tạo.
@@ -667,58 +1077,25 @@ LƯU Ý: Đánh dấu rõ đây là BẢN NHÁP DO AI HỖ TRỢ SOẠN, giáo v
     const prompt = `Soạn Kế hoạch bài dạy chi tiết cho:
 - Môn học: ${subject}
 - Khối lớp: Lớp ${grade}
-- Tên bài dạy: ${lessonName || 'Phân số bằng nhau và rút gọn phân số'}
+- Tên bài dạy: ${lessonName}
 - Thời lượng: ${duration}
 - Phương pháp dạy học ưu tiên: ${teachingMethod}
 - Gợi ý yêu cầu cần đạt: ${objectives || 'Chuẩn CTGDPT 2018/2026'}`;
 
-    let generatedPlan = '';
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        generatedPlan = await callGeminiSafe({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: { systemInstruction }
-        });
-      } catch (err: any) {
-        console.error('Gemini fallback in lesson plan:', err?.message);
-      }
-    }
-
-    if (!generatedPlan) {
-      generatedPlan = `KẾ HOẠCH BÀI DẠY (BẢN NHÁP AI - CHUẨN CÔNG VĂN 2345/BGDĐT)
-Môn: ${subject.toUpperCase()} - Khối ${grade}
-Tên bài: ${lessonName}
-Thời lượng: ${duration}
-
-I. YÊU CẦU CẦN ĐẠT:
-1. Năng lực toán học: Nhận biết bản chất khái niệm, vận dụng tính chất cơ bản để tìm các biểu diễn tương đương.
-2. Năng lực chung: Tự chủ và tự học, giao tiếp và hợp tác nhóm đôi.
-3. Phẩm chất: Rèn luyện tính cẩn thận, yêu thích khám phá công nghệ.
-
-II. ĐỒ DÙNG DẠY HỌC:
-- Giáo viên: Máy tính bảng/màn hình tương tác kết nối EduBot AI, bộ băng giấy phân số màu.
-- Học sinh: SGK, vở ghi, phiếu học tập tương tác.
-
-III. CÁC HOẠT ĐỘNG DẠY HỌC:
-1. Khởi động (5'): Tình huống robot EduBot chia thanh năng lượng.
-2. Khám phá (12'): Thực hành gấp giấy và quan sát mô hình trực quan.
-3. Luyện tập (13'): Làm phiếu bài tập cá nhân hóa trên hệ thống EduBot.
-4. Vận dụng (5'): Giải bài toán thực tế chia quả bánh trong sinh hoạt gia đình.
-
-IV. ĐIỀU CHỈNH VÀ PHÂN HÓA:
-- Học sinh tiếp thu nhanh: Giao thêm bài toán tìm x vận dụng cao.
-- Học sinh cần hỗ trợ: Sử dụng trợ lý EduBot gợi ý bằng hình ảnh trực quan.`;
-    }
+    const generatedPlan = await callGeminiSafe({
+      model: GEMINI_TEXT_MODEL,
+      contents: prompt,
+      config: { systemInstruction }
+    });
 
     const newDraft: AiDraftItem = {
       id: `draft-plan-${Date.now()}`,
       type: 'lesson_plan',
-      title: `Kế hoạch bài dạy: ${lessonName || 'Bài học mới'} - Khối ${grade}`,
+      title: `Kế hoạch bài dạy: ${lessonName} - Khối ${grade}`,
       subjectId: subject,
       grade: Number(grade),
       createdAt: new Date().toISOString(),
-      createdBy: 'Cô Nguyễn Mai (EduBot Teacher AI)',
+      createdBy: `${req.authUser!.name} (EduBot Teacher AI)`,
       status: 'draft',
       content: {
         text: generatedPlan,
@@ -730,20 +1107,22 @@ IV. ĐIỀU CHỈNH VÀ PHÂN HÓA:
     };
 
     aiDrafts.unshift(newDraft);
-
-    addAuditLog('AI Soạn bài giảng', 'Giáo viên', 'teacher', `AI tạo bản nháp KHBD "${newDraft.title}"`, 'success');
-
+    addAuditLog('AI Soạn bài giảng', req.authUser!.email, req.authUser!.role, `AI tạo bản nháp KHBD "${newDraft.title}"`, 'success');
     res.json({ success: true, draft: newDraft });
   } catch (error: any) {
-    console.error('Error generating lesson plan:', error);
-    res.status(500).json({ error: 'Không thể tạo bài giảng qua AI lúc này.' });
+    console.error('Error generating lesson plan:', error?.message);
+    const mapped = mapGeminiError(error);
+    res.status(mapped.status).json({ error: mapped.message });
   }
 });
 
-// 3. EduBot Teacher AI - Knowledge Standardization (Chuẩn hóa kiến thức & Phát hiện lỗi)
-app.post('/api/ai/teacher/standardize-knowledge', async (req: Request, res: Response) => {
+// 3. EduBot Teacher AI - Knowledge Standardization
+app.post('/api/ai/teacher/standardize-knowledge', authenticateRequest, requireRole('teacher', 'admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { rawContent, grade = 4, subject = 'toan', lessonTitle } = req.body;
+    if (!rawContent || !String(rawContent).trim()) {
+      return res.status(400).json({ error: 'Vui lòng nhập nội dung cần chuẩn hóa.' });
+    }
 
     const systemInstruction = `Bạn là Chuyên gia Thẩm định Chương trình Giáo dục Tiểu học Việt Nam.
 Nhiệm vụ: Đối chiếu văn bản kiến thức do giáo viên cung cấp với Chương trình Giáo dục Phổ thông 2018 (Thông tư 32/2018/TT-BGDĐT và các văn bản cập nhật 2025/2026).
@@ -759,36 +1138,11 @@ Phân tích chi tiết và trả về:
 - Nội dung gốc cần thẩm định:
 "${rawContent}"`;
 
-    let standardizedResult = '';
-
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        standardizedResult = await callGeminiSafe({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: { systemInstruction }
-        });
-      } catch (err: any) {
-        console.error('Gemini fallback in standardize-knowledge:', err?.message);
-      }
-    }
-
-    if (!standardizedResult) {
-      standardizedResult = `BẢN BÁO CÁO CHUẨN HÓA KIẾN THỨC (EDUBOT AI AUDIT)
-Bài: ${lessonTitle || 'Khái niệm kiến thức'} - Môn ${subject} Lớp ${grade}
-
-1. ĐỐI CHIẾU CHUẨN ĐẦU RA (YCCĐ - TT 32/2018):
-- Kiến thức phù hợp chuẩn phát triển năng lực tư duy toán học/khoa học.
-- Đã lưu ý nhấn mạnh điều kiện mẫu số luôn phải khác 0 đối với phân số.
-
-2. CÁC ĐIỂM CẦN CHỈNH SỬA / ĐỀ XUẤT SƯ PHẠM:
-- Nội dung gốc dùng từ ngữ mang tính hàn lâm, đề xuất chuyển thành ngôn ngữ trực quan gần gũi với trẻ 9-10 tuổi.
-- Bổ sung cảnh báo lỗi sai thường gặp khi rút gọn phân số.
-
-3. PHIÊN BẢN ĐÃ CHUẨN HÓA CHO HỌC SINH:
-- Khái niệm ngắn gọn: 2-3 câu đúc kết.
-- Ví dụ minh họa thực tế dễ hình dung.`;
-    }
+    const standardizedResult = await callGeminiSafe({
+      model: GEMINI_TEXT_MODEL,
+      contents: prompt,
+      config: { systemInstruction }
+    });
 
     const newDraft: AiDraftItem = {
       id: `draft-std-${Date.now()}`,
@@ -797,7 +1151,7 @@ Bài: ${lessonTitle || 'Khái niệm kiến thức'} - Môn ${subject} Lớp ${g
       subjectId: subject,
       grade: Number(grade),
       createdAt: new Date().toISOString(),
-      createdBy: 'Giáo viên (EduBot Standardizer)',
+      createdBy: `${req.authUser!.name} (EduBot Standardizer)`,
       status: 'draft',
       content: {
         rawContent,
@@ -807,18 +1161,29 @@ Bài: ${lessonTitle || 'Khái niệm kiến thức'} - Môn ${subject} Lớp ${g
     };
 
     aiDrafts.unshift(newDraft);
-
+    addAuditLog('AI Chuẩn hóa kiến thức', req.authUser!.email, req.authUser!.role, `AI tạo báo cáo chuẩn hóa "${newDraft.title}"`, 'success');
     res.json({ success: true, draft: newDraft });
   } catch (error: any) {
-    console.error('Error in standardize-knowledge:', error);
-    res.status(500).json({ error: 'Lỗi chuẩn hóa kiến thức.' });
+    console.error('Error in standardize-knowledge:', error?.message);
+    const mapped = mapGeminiError(error);
+    res.status(mapped.status).json({ error: mapped.message });
   }
 });
 
-// 4. EduBot Teacher AI - Question & Exam Matrix Generator (Tạo đề kiểm tra & câu hỏi)
-app.post('/api/ai/teacher/generate-quiz', async (req: Request, res: Response) => {
+// 4. EduBot Teacher AI - Question & Exam Matrix Generator
+app.post('/api/ai/teacher/generate-quiz', authenticateRequest, requireRole('teacher', 'admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
-    const { grade = 4, subject = 'toan', topic = 'Phân số', questionCount = 4, cognitiveLevels = ['nhan_biet', 'thong_hieu', 'van_dung'] } = req.body;
+    const {
+      grade = 4,
+      subject = 'toan',
+      topic = 'Phân số',
+      questionCount = 4,
+      cognitiveLevels = ['nhan_biet', 'thong_hieu', 'van_dung']
+    } = req.body;
+
+    if (!topic || !String(topic).trim()) {
+      return res.status(400).json({ error: 'Vui lòng nhập chủ đề đề kiểm tra.' });
+    }
 
     const systemInstruction = `Bạn là Trợ lý Khảo thí & Đánh giá Giáo dục Tiểu học EduBot.
 Nhiệm vụ: Tạo ma trận đề và bộ câu hỏi đánh giá theo chuẩn 4 mức độ nhận thức (Nhận biết, Thông hiểu, Vận dụng, Vận dụng cao) bám sát CTGDPT Việt Nam.
@@ -826,39 +1191,14 @@ Tạo các câu hỏi trắc nghiệm khách quan và tự luận có kèm đáp
 
     const prompt = `Hãy tạo bộ ${questionCount} câu hỏi kiểm tra cho:
 Môn: ${subject}, Khối: Lớp ${grade}, Chủ đề: ${topic}.
+Các mức độ nhận thức cần bao phủ: ${Array.isArray(cognitiveLevels) ? cognitiveLevels.join(', ') : cognitiveLevels}.
 Yêu cầu gồm câu hỏi trắc nghiệm, đúng/sai, điền khuyết và toán thực tế có lời giải từng bước.`;
 
-    let generatedQuizText = '';
-
-    if (process.env.GEMINI_API_KEY) {
-      try {
-        generatedQuizText = await callGeminiSafe({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: { systemInstruction }
-        });
-      } catch (err: any) {
-        console.error('Gemini fallback in generate-quiz:', err?.message);
-      }
-    }
-
-    if (!generatedQuizText) {
-      generatedQuizText = `MA TRẬN VÀ BỘ CÂU HỎI ĐÁNH GIÁ (EDUBOT AI EXAM BUILDER)
-Môn: ${subject} - Lớp ${grade} - Chủ đề: ${topic}
-
-Câu 1 [Nhận biết - Trắc nghiệm]:
-- Đề bài: Phân số chỉ 3 phần tô màu trong hình chia làm 5 phần bằng nhau là:
-  A. 5/3    B. 3/5 (Đáp án đúng)    C. 3/8    D. 2/5
-- Lời giải: Tử số là số phần tô màu (3), mẫu số là tổng số phần (5).
-
-Câu 2 [Thông hiểu - Đúng/Sai]:
-- Đề bài: Phân số 6/9 và 2/3 là hai phân số bằng nhau. (Đúng)
-- Lời giải: Rút gọn 6/9 bằng cách chia cả tử và mẫu cho 3 được 2/3.
-
-Câu 3 [Vận dụng - Điền số]:
-- Đề bài: Tìm số thích hợp điền vào ô trống: 4/7 = 16/... (Đáp án: 28)
-- Lời giải: Vì 16 = 4 × 4 nên mẫu số là 7 × 4 = 28.`;
-    }
+    const generatedQuizText = await callGeminiSafe({
+      model: GEMINI_TEXT_MODEL,
+      contents: prompt,
+      config: { systemInstruction }
+    });
 
     const newDraft: AiDraftItem = {
       id: `draft-quiz-${Date.now()}`,
@@ -867,7 +1207,7 @@ Câu 3 [Vận dụng - Điền số]:
       subjectId: subject,
       grade: Number(grade),
       createdAt: new Date().toISOString(),
-      createdBy: 'Giáo viên (EduBot Exam Generator)',
+      createdBy: `${req.authUser!.name} (EduBot Exam Generator)`,
       status: 'draft',
       content: {
         text: generatedQuizText,
@@ -877,22 +1217,25 @@ Câu 3 [Vận dụng - Điền số]:
     };
 
     aiDrafts.unshift(newDraft);
-
+    addAuditLog('AI Tạo đề kiểm tra', req.authUser!.email, req.authUser!.role, `AI tạo bộ đề "${newDraft.title}"`, 'success');
     res.json({ success: true, draft: newDraft });
   } catch (error: any) {
-    console.error('Error in generate-quiz:', error);
-    res.status(500).json({ error: 'Không thể tạo đề kiểm tra lúc này.' });
+    console.error('Error in generate-quiz:', error?.message);
+    const mapped = mapGeminiError(error);
+    res.status(mapped.status).json({ error: mapped.message });
   }
 });
 
 // ----------------- ANALYTICS & DASHBOARDS -----------------
-app.get('/api/analytics/overview', (req: Request, res: Response) => {
-  const totalStudents = users.filter(u => u.role === 'student').length + 56;
-  const totalTeachers = users.filter(u => u.role === 'teacher').length + 12;
+app.get('/api/analytics/overview', (_req: Request, res: Response) => {
+  const totalStudents = users.filter((u) => u.role === 'student').length;
+  const totalTeachers = users.filter((u) => u.role === 'teacher').length;
   const totalLessons = lessons.length;
-  const totalSubmissions = submissions.length + 148;
-  const avgScore = 8.6;
-  const pendingReviews = aiDrafts.filter(d => d.status === 'draft').length;
+  const totalSubmissions = submissions.length;
+  const avgScore = submissions.length > 0
+    ? Number((submissions.reduce((acc, s) => acc + s.score, 0) / submissions.length).toFixed(1))
+    : 0;
+  const pendingReviews = aiDrafts.filter((d) => d.status === 'draft').length;
 
   res.json({
     totalStudents,
@@ -902,7 +1245,9 @@ app.get('/api/analytics/overview', (req: Request, res: Response) => {
     avgScore,
     pendingReviews,
     curriculumVersion: 'CTGDPT-2018 (TT 32/2018 & TT 17/2025/TT-BGDĐT)',
-    aiStatus: process.env.GEMINI_API_KEY ? 'active' : 'fallback_mode'
+    aiModel: GEMINI_TEXT_MODEL,
+    aiStatus: process.env.GEMINI_API_KEY ? 'active' : 'unconfigured',
+    persistenceMode: 'in_memory'
   });
 });
 

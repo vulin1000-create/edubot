@@ -834,6 +834,296 @@ export const initialExercises: ExerciseSet[] = [
     ]
   },
 
+  // Exercise Set for Grade 2 - Math (10 questions)
+  {
+    id: 'ex-math-201',
+    title: 'Thử Thách Toán 2: Phép Cộng Có Nhớ Trong Phạm Vi 100 (10 Câu)',
+    subjectId: 'toan',
+    grade: 2,
+    lessonId: 'lesson-math-201',
+    durationMinutes: 15,
+    totalPoints: 10,
+    questions: [
+      {
+        id: 'q2-1',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'single_choice',
+        difficulty: 'nhan_biet',
+        questionText: 'Kết quả của phép tính 28 + 15 là bao nhiêu?',
+        options: ['33', '43', '42', '35'],
+        correctAnswer: 1,
+        explanation: '8 + 5 = 13 viết 3 nhớ 1; 2 + 1 = 3, thêm 1 bằng 4. Kết quả là 43.',
+        pedagogicalHint: 'Nhớ cộng thêm 1 vào hàng chục sau khi cộng hàng đơn vị nhé!'
+      },
+      {
+        id: 'q2-2',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'fill_blank',
+        difficulty: 'nhan_biet',
+        questionText: 'Tính nhẩm: 47 + 25 = ...',
+        correctAnswer: '72',
+        explanation: '7 + 5 = 12 viết 2 nhớ 1; 4 + 2 + 1 = 7. Kết quả là 72.',
+        pedagogicalHint: 'Cộng 7 + 5 trước, viết 2 và nhớ 1 sang hàng chục.'
+      },
+      {
+        id: 'q2-3',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'true_false',
+        difficulty: 'thong_hieu',
+        questionText: 'Phép tính 38 + 25 cho kết quả bằng 53. Đúng hay Sai?',
+        correctAnswer: false,
+        explanation: 'Sai! 8 + 5 = 13 nhớ 1 sang hàng chục, nên 3 + 2 + 1 = 6, kết quả đúng là 63.',
+        pedagogicalHint: 'Hãy kiểm tra xem bạn đã cộng thêm số nhớ vào hàng chục chưa!'
+      },
+      {
+        id: 'q2-4',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'single_choice',
+        difficulty: 'thong_hieu',
+        questionText: 'Trong phép cộng 36 + 29 = 65, các số 36 và 29 được gọi là gì?',
+        options: ['Tổng', 'Số hạng', 'Số bị trừ', 'Hiệu'],
+        correctAnswer: 1,
+        explanation: 'Các số đem cộng lại với nhau gọi là số hạng, kết quả gọi là tổng.',
+        pedagogicalHint: 'Tên gọi các thành phần trong phép cộng là Số hạng + Số hạng = Tổng.'
+      },
+      {
+        id: 'q2-5',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'short_answer',
+        difficulty: 'van_dung',
+        questionText: 'Lan có 39 viên kẹo, mẹ cho Lan thêm 16 viên nữa. Hỏi Lan có tất cả bao nhiêu viên kẹo?',
+        correctAnswer: '55',
+        explanation: 'Số kẹo Lan có tất cả là: 39 + 16 = 55 (viên kẹo).',
+        pedagogicalHint: 'Thực hiện phép cộng có nhớ 39 + 16.'
+      },
+      {
+        id: 'q2-6',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'fill_blank',
+        difficulty: 'thong_hieu',
+        questionText: 'Điền số thích hợp vào chỗ chấm: 54 + ... = 70',
+        correctAnswer: '16',
+        explanation: 'Ta lấy 70 - 54 = 16. Kiểm tra lại: 54 + 16 = 70.',
+        pedagogicalHint: '4 cộng mấy để được số tròn chục có tận cùng là 0 (tức là 10)?'
+      },
+      {
+        id: 'q2-7',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'single_choice',
+        difficulty: 'van_dung',
+        questionText: 'Tổng nào sau đây lớn nhất?',
+        options: ['29 + 18', '35 + 17', '24 + 27', '19 + 30'],
+        correctAnswer: 1,
+        explanation: '29+18=47; 35+17=52; 24+27=51; 19+30=49. Tổng lớn nhất là 52 (35 + 17).',
+        pedagogicalHint: 'Hãy tính cẩn thận từng phép cộng rồi so sánh kết quả.'
+      },
+      {
+        id: 'q2-8',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'matching',
+        difficulty: 'thong_hieu',
+        questionText: 'Nối phép tính với kết quả đúng:',
+        correctAnswer: { '18 + 14': '32', '27 + 16': '43', '45 + 19': '64' },
+        pairs: [
+          { left: '18 + 14', right: '32' },
+          { left: '27 + 16', right: '43' },
+          { left: '45 + 19', right: '64' }
+        ],
+        explanation: '18 + 14 = 32; 27 + 16 = 43; 45 + 19 = 64.',
+        pedagogicalHint: 'Nhẩm hàng đơn vị trước để loại trừ nhanh các đáp án.'
+      },
+      {
+        id: 'q2-9',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'step_math',
+        difficulty: 'van_dung_cao',
+        questionText: 'Robot EduBot có 28 pin xanh và 37 pin vàng. Tính tổng số pin EduBot có:',
+        correctAnswer: '65',
+        explanation: '8 + 7 = 15 viết 5 nhớ 1. 2 + 3 = 5, thêm 1 nhớ bằng 6. Tổng là 65.',
+        pedagogicalHint: 'Cộng theo hai bước: hàng đơn vị trước rồi hàng chục cộng thêm số nhớ.',
+        steps: [
+          { stepNumber: 1, instruction: 'Cộng hàng đơn vị: 8 + 7', formula: '8 + 7 = 15', solution: 'Viết 5 nhớ 1' },
+          { stepNumber: 2, instruction: 'Cộng hàng chục thêm 1 nhớ', formula: '2 + 3 + 1', solution: '65' }
+        ]
+      },
+      {
+        id: 'q2-10',
+        lessonId: 'lesson-math-201',
+        subjectId: 'toan',
+        grade: 2,
+        type: 'true_false',
+        difficulty: 'nhan_biet',
+        questionText: 'Khi đặt tính cộng theo cột dọc, ta phải viết hàng đơn vị thẳng cột với hàng đơn vị. Đúng hay Sai?',
+        correctAnswer: true,
+        explanation: 'Đúng! Đặt tính thẳng cột giúp tránh nhầm lẫn khi cộng hàng đơn vị và hàng chục.',
+        pedagogicalHint: 'Quy tắc vàng đặt tính: thẳng hàng thẳng cột.'
+      }
+    ]
+  },
+
+  // Exercise Set for Grade 3 - Math (10 questions)
+  {
+    id: 'ex-math-301',
+    title: 'Thử Thách Toán 3: Bảng Nhân 7, 8, 9 & Giảm Một Số Lần (10 Câu)',
+    subjectId: 'toan',
+    grade: 3,
+    lessonId: 'lesson-math-301',
+    durationMinutes: 15,
+    totalPoints: 10,
+    questions: [
+      {
+        id: 'q3-1',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'single_choice',
+        difficulty: 'nhan_biet',
+        questionText: 'Kết quả của phép nhân 7 × 8 là bao nhiêu?',
+        options: ['54', '56', '63', '48'],
+        correctAnswer: 1,
+        explanation: 'Theo bảng nhân 7, 7 × 8 = 56.',
+        pedagogicalHint: 'Nhẩm lại bảng nhân 7: 7 × 7 = 49, thêm 7 nữa bằng bao nhiêu?'
+      },
+      {
+        id: 'q3-2',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'fill_blank',
+        difficulty: 'nhan_biet',
+        questionText: 'Tính: 9 × 6 = ...',
+        correctAnswer: '54',
+        explanation: 'Theo bảng nhân 9: 9 × 6 = 54.',
+        pedagogicalHint: 'Mẹo nhân 9: 9 × 6 = 60 - 6.'
+      },
+      {
+        id: 'q3-3',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'single_choice',
+        difficulty: 'thong_hieu',
+        questionText: 'Giảm số 24 đi 3 lần ta được số nào?',
+        options: ['21', '8', '72', '27'],
+        correctAnswer: 1,
+        explanation: 'Muốn giảm một số đi 3 lần, ta lấy số đó chia cho 3: 24 : 3 = 8.',
+        pedagogicalHint: 'Phân biệt "giảm đi 3 lần" (phép chia) với "giảm đi 3 đơn vị" (phép trừ)!'
+      },
+      {
+        id: 'q3-4',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'true_false',
+        difficulty: 'thong_hieu',
+        questionText: 'Giảm 32 đi 4 lần thì ta làm phép tính 32 - 4 = 28. Đúng hay Sai?',
+        correctAnswer: false,
+        explanation: 'Sai! "Giảm đi 4 lần" phải làm phép chia 32 : 4 = 8. Còn 32 - 4 là giảm đi 4 đơn vị.',
+        pedagogicalHint: 'Chú ý chữ "lần" hay "đơn vị" ở cuối câu hỏi!'
+      },
+      {
+        id: 'q3-5',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'short_answer',
+        difficulty: 'van_dung',
+        questionText: 'Một băng giấy dài 45cm, người ta cắt giảm độ dài đi 5 lần. Hỏi băng giấy mới dài bao nhiêu cm?',
+        correctAnswer: '9',
+        explanation: 'Độ dài băng giấy mới là: 45 : 5 = 9 (cm).',
+        pedagogicalHint: 'Lấy 45 chia cho 5 nhé!'
+      },
+      {
+        id: 'q3-6',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'fill_blank',
+        difficulty: 'thong_hieu',
+        questionText: 'Điền số thích hợp: 8 × ... = 64',
+        correctAnswer: '8',
+        explanation: 'Vì 8 × 8 = 64 nên số cần điền là 8.',
+        pedagogicalHint: 'Nhẩm bảng nhân 8 xem 8 nhân mấy bằng 64.'
+      },
+      {
+        id: 'q3-7',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'matching',
+        difficulty: 'thong_hieu',
+        questionText: 'Nối phép tính với kết quả đúng:',
+        correctAnswer: { '7 × 9': '63', '8 × 7': '56', '9 × 8': '72' },
+        pairs: [
+          { left: '7 × 9', right: '63' },
+          { left: '8 × 7', right: '56' },
+          { left: '9 × 8', right: '72' }
+        ],
+        explanation: '7 × 9 = 63; 8 × 7 = 56; 9 × 8 = 72.',
+        pedagogicalHint: 'Kiểm tra hàng đơn vị của từng tích để ghép chính xác.'
+      },
+      {
+        id: 'q3-8',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'single_choice',
+        difficulty: 'van_dung',
+        questionText: 'Mỗi hộp có 8 chiếc bút chì. Hỏi 7 hộp như thế có tất cả bao nhiêu chiếc bút chì?',
+        options: ['15 chiếc', '56 chiếc', '48 chiếc', '64 chiếc'],
+        correctAnswer: 1,
+        explanation: 'Số bút chì trong 7 hộp là: 8 × 7 = 56 (chiếc).',
+        pedagogicalHint: 'Lấy số bút trong 1 hộp nhân với số hộp.'
+      },
+      {
+        id: 'q3-9',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'step_math',
+        difficulty: 'van_dung_cao',
+        questionText: 'Mẹ hái được 42 quả cam, sau khi biếu bà thì số cam còn lại giảm đi 6 lần so với ban đầu. Hỏi mẹ còn lại bao nhiêu quả cam?',
+        correctAnswer: '7',
+        explanation: 'Số cam còn lại = 42 : 6 = 7 (quả).',
+        pedagogicalHint: 'Xác định phép chia khi giảm đi 6 lần.',
+        steps: [
+          { stepNumber: 1, instruction: 'Nhận diện phép tính giảm đi 6 lần', formula: '42 : 6', solution: 'Phép chia' },
+          { stepNumber: 2, instruction: 'Tính kết quả theo bảng chia 6', formula: '42 : 6', solution: '7' }
+        ]
+      },
+      {
+        id: 'q3-10',
+        lessonId: 'lesson-math-301',
+        subjectId: 'toan',
+        grade: 3,
+        type: 'true_false',
+        difficulty: 'nhan_biet',
+        questionText: 'Kết quả của 9 × 9 lớn hơn 80. Đúng hay Sai?',
+        correctAnswer: true,
+        explanation: 'Đúng! Vì 9 × 9 = 81 và 81 > 80.',
+        pedagogicalHint: 'Tính 9 × 9 bằng bao nhiêu rồi so sánh với 80.'
+      }
+    ]
+  },
+
   // Exercise Set for Grade 5 - Math (10 questions)
   {
     id: 'ex-math-501',

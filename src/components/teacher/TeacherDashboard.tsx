@@ -4,12 +4,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { User, ClassRoom, Assignment, AiDraftItem } from '../../types/index.ts';
+import { User, ClassRoom, Assignment, AiDraftItem, StudentSubmission } from '../../types/index.ts';
 import { StudentDetailModal } from './StudentDetailModal.tsx';
 import {
   Users,
-  BookOpen,
-  FileText,
   Sparkles,
   Plus,
   ArrowRight,
@@ -17,55 +15,132 @@ import {
   AlertCircle,
   Clock,
   CheckCircle2,
-  Share2,
   GraduationCap,
-  ChevronDown,
-  ExternalLink
+  ExternalLink,
+  UserPlus
 } from 'lucide-react';
 
 interface TeacherDashboardProps {
   user: User;
   classes: ClassRoom[];
   assignments: Assignment[];
+  submissions: StudentSubmission[];
   drafts: AiDraftItem[];
+  authToken?: string | null;
   onNavigate: (tab: string) => void;
-  onCreateClass: (name: string, grade: number) => void;
+  onCreateClass: (name: string, grade: number) => Promise<void> | void;
+  onClassUpdated?: (updatedClass: ClassRoom) => void;
 }
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   user,
   classes,
   assignments,
+  submissions,
   drafts,
+  authToken,
   onNavigate,
   onCreateClass,
+  onClassUpdated,
 }) => {
   const teacherImage = '/src/assets/images/edubot_teacher_studio_1793780438619.jpg';
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [newClassName, setNewClassName] = useState('');
   const [newClassGrade, setNewClassGrade] = useState(4);
   const [selectedClassId, setSelectedClassId] = useState<string | null>(null);
-  const [students, setStudents] = useState<User[]>([]);
-  const [selectedStudentForModal, setSelectedStudentForModal] = useState<{ id: string; name: string; email: string; xp: number; progress: number } | null>(null);
+  const [directoryStudents, setDirectoryStudents] = useState<User[]>([]);
+  const [selectedStudentForModal, setSelectedStudentForModal] = useState<{
+    id: string;
+    name: string;
+    email: string;
+    xp: number;
+    progress: number;
+  } | null>(null);
+
+  const [addStudentEmail, setAddStudentEmail] = useState('');
+  const [addStudentError, setAddStudentError] = useState('');
+  const [isAddingStudent, setIsAddingStudent] = useState(false);
 
   useEffect(() => {
-    fetch('/api/auth/users')
-      .then((res) => res.json())
+    if (!authToken) return;
+    fetch('/api/auth/users', {
+      headers: { Authorization: `Bearer ${authToken}` },
+    })
+      .then((res) => (res.ok ? res.json() : []))
       .then((data: User[]) => {
-        setStudents(data.filter((u) => u.role === 'student'));
+        if (Array.isArray(data)) {
+          setDirectoryStudents(data.filter((u) => u.role === 'student'));
+        }
       })
       .catch((err) => console.error(err));
-  }, []);
+  }, [authToken]);
 
   const pendingDrafts = drafts.filter((d) => d.status === 'draft');
   const totalStudents = classes.reduce((acc, c) => acc + c.studentCount, 0);
 
-  const handleCreateSubmit = (e: React.FormEvent) => {
+  // Real submission & KPI metrics
+  const totalExpected = assignments.reduce((acc, a) => acc + a.totalStudents, 0);
+  const totalCompleted = assignments.reduce((acc, a) => acc + a.completedCount, 0);
+  const completionRate = totalExpected > 0 ? `${((totalCompleted / totalExpected) * 100).toFixed(1)}%` : '0%';
+  const avgScore =
+    submissions.length > 0
+      ? `${(submissions.reduce((acc, s) => acc + s.score, 0) / submissions.length).toFixed(1)}/10`
+      : 'Chưa có';
+
+  // Aggregate misconceptions from real submissions
+  const misconceptionCounts = new Map<string, number>();
+  submissions.forEach((s) => {
+    (s.misconceptionTags || []).forEach((tag) => {
+      misconceptionCounts.set(tag, (misconceptionCounts.get(tag) || 0) + 1);
+    });
+  });
+  const topMisconceptions = Array.from(misconceptionCounts.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3);
+
+  const selectedClass = classes.find((c) => c.id === selectedClassId) || null;
+  const classStudentEmails = new Set((selectedClass?.students || []).map((s) => s.email.toLowerCase()));
+  const availableStudentsToAdd = directoryStudents.filter(
+    (s) => !classStudentEmails.has(s.email.toLowerCase())
+  );
+
+  const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newClassName.trim()) return;
-    onCreateClass(newClassName.trim(), newClassGrade);
+    await onCreateClass(newClassName.trim(), newClassGrade);
     setNewClassName('');
     setShowCreateModal(false);
+  };
+
+  const handleAddStudentToClass = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedClass || !addStudentEmail.trim() || !authToken) return;
+    setIsAddingStudent(true);
+    setAddStudentError('');
+    try {
+      const res = await fetch('/api/classes/join', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          classId: selectedClass.id,
+          studentEmail: addStudentEmail.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setAddStudentError(data.error || 'Không thể thêm học sinh vào lớp.');
+        return;
+      }
+      onClassUpdated?.(data.class);
+      setAddStudentEmail('');
+    } catch {
+      setAddStudentError('Lỗi kết nối máy chủ khi thêm học sinh.');
+    } finally {
+      setIsAddingStudent(false);
+    }
   };
 
   return (
@@ -91,7 +166,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               Chào mừng {user.name}
             </h1>
             <p className="text-xs sm:text-sm text-slate-300">
-              Trường Tiểu học Thăng Long · Phụ trách Lớp 4A1 & Lớp 3B. Hãy cùng trợ lý AI tiết kiệm 70% thời gian soạn giáo án và tạo đề kiểm tra chuẩn hóa.
+              {user.school || 'Trường Tiểu học'} · Phụ trách {classes.length} lớp học ({totalStudents} học sinh). Sử dụng trợ lý AI để soạn giáo án và tạo đề kiểm tra chuẩn hóa.
             </p>
           </div>
 
@@ -133,20 +208,22 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             <TrendingUp className="w-4 h-4 text-emerald-500" />
           </div>
           <div className="mt-2 text-2xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
-            87.4%
+            {completionRate}
           </div>
-          <div className="mt-1 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">Tăng 5.2% tuần này</div>
+          <div className="mt-1 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
+            {totalCompleted}/{totalExpected} lượt nộp bài
+          </div>
         </div>
 
         <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
           <div className="flex items-center justify-between">
-            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Điểm trung bình lớp</span>
+            <span className="text-xs font-medium text-slate-500 dark:text-slate-400">Điểm trung bình bài nộp</span>
             <CheckCircle2 className="w-4 h-4 text-purple-500" />
           </div>
           <div className="mt-2 text-2xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
-            8.6/10
+            {avgScore}
           </div>
-          <div className="mt-1 text-[11px] text-slate-500">Toán & Tiếng Việt</div>
+          <div className="mt-1 text-[11px] text-slate-500">Từ {submissions.length} bài đã chấm</div>
         </div>
 
         <div className="bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800">
@@ -161,10 +238,8 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         </div>
       </div>
 
-      {/* Main Grid: Classrooms & AI Quick Studio */}
+      {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        
-        {/* Left 2 Cols: Classrooms list & Active Assignments */}
         <div className="lg:col-span-2 space-y-6">
           <div className="flex items-center justify-between">
             <h2 className="text-lg font-bold text-slate-900 dark:text-white font-display flex items-center gap-2">
@@ -180,60 +255,73 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </button>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {classes.map((c) => {
-              const isSelected = selectedClassId === c.id;
-              return (
-                <div
-                  key={c.id}
-                  className={`bg-white dark:bg-slate-900 p-5 rounded-2xl border transition-all shadow-sm space-y-3 ${
-                    isSelected
-                      ? 'border-cyan-500 ring-2 ring-cyan-500/20'
-                      : 'border-slate-200 dark:border-slate-800'
-                  }`}
-                >
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <span className="text-xs font-semibold text-slate-400">Khối {c.grade} · Năm {c.academicYear}</span>
-                      <h3 className="text-base font-bold text-slate-900 dark:text-white">{c.name}</h3>
+          {classes.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {classes.map((c) => {
+                const isSelected = selectedClassId === c.id;
+                return (
+                  <div
+                    key={c.id}
+                    className={`bg-white dark:bg-slate-900 p-5 rounded-2xl border transition-all shadow-sm space-y-3 ${
+                      isSelected
+                        ? 'border-cyan-500 ring-2 ring-cyan-500/20'
+                        : 'border-slate-200 dark:border-slate-800'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <span className="text-xs font-semibold text-slate-400">
+                          Khối {c.grade} · Năm {c.academicYear}
+                        </span>
+                        <h3 className="text-base font-bold text-slate-900 dark:text-white">{c.name}</h3>
+                      </div>
+                      <div className="bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-800 px-2.5 py-1 rounded-md text-xs font-mono font-bold">
+                        {c.code}
+                      </div>
                     </div>
-                    <div className="bg-cyan-50 dark:bg-cyan-950/40 text-cyan-700 dark:text-cyan-300 border border-cyan-200 dark:border-cyan-800 px-2.5 py-1 rounded-md text-xs font-mono font-bold">
-                      {c.code}
+
+                    <div className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100 dark:border-slate-800">
+                      <button
+                        onClick={() => {
+                          setSelectedClassId(isSelected ? null : c.id);
+                          setAddStudentError('');
+                        }}
+                        className="text-slate-700 dark:text-slate-300 hover:text-cyan-600 font-semibold flex items-center gap-1.5"
+                      >
+                        <GraduationCap className="w-3.5 h-3.5 text-cyan-500" />
+                        <span>
+                          {c.students.length} hồ sơ / {c.studentCount} Sĩ số ({isSelected ? 'Thu gọn' : 'Xem danh sách'})
+                        </span>
+                      </button>
+                      <button
+                        onClick={() => onNavigate('assignment-manager')}
+                        className="text-cyan-600 dark:text-cyan-400 font-semibold hover:underline flex items-center gap-1"
+                      >
+                        <span>Giao bài</span>
+                        <ArrowRight className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="bg-white dark:bg-slate-900 p-8 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500">
+              Chưa có lớp học nào. Nhấn "Tạo lớp mới" để khởi tạo lớp đầu tiên.
+            </div>
+          )}
 
-                  <div className="flex items-center justify-between text-xs text-slate-500 pt-2 border-t border-slate-100 dark:border-slate-800">
-                    <button
-                      onClick={() => setSelectedClassId(isSelected ? null : c.id)}
-                      className="text-slate-700 dark:text-slate-300 hover:text-cyan-600 font-semibold flex items-center gap-1.5"
-                    >
-                      <GraduationCap className="w-3.5 h-3.5 text-cyan-500" />
-                      <span>{c.studentCount} Học sinh ({isSelected ? 'Thu gọn' : 'Xem danh sách'})</span>
-                    </button>
-                    <button
-                      onClick={() => onNavigate('assignment-manager')}
-                      className="text-cyan-600 dark:text-cyan-400 font-semibold hover:underline flex items-center gap-1"
-                    >
-                      <span>Giao bài</span>
-                      <ArrowRight className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Expanded Class Roster */}
-          {selectedClassId && (
+          {/* Expanded Class Roster (Class-specific students + Add Student) */}
+          {selectedClass && (
             <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-cyan-400/40 dark:border-cyan-800/60 shadow-md space-y-4 animate-in fade-in">
               <div className="flex items-center justify-between">
                 <div>
                   <h3 className="text-sm font-bold text-slate-900 dark:text-white font-display flex items-center gap-2">
                     <GraduationCap className="w-4 h-4 text-cyan-500" />
-                    <span>Danh sách học sinh lớp {classes.find(c => c.id === selectedClassId)?.name}</span>
+                    <span>Danh sách học sinh lớp {selectedClass.name}</span>
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Bấm vào từng học sinh để xem hồ sơ năng lực, điểm số chi tiết và gợi ý sư phạm AI.
+                    Bấm vào từng học sinh để xem hồ sơ năng lực và điểm số chi tiết.
                   </p>
                 </div>
                 <button
@@ -244,38 +332,68 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                {students.map((st) => (
-                  <div
-                    key={st.id}
-                    onClick={() =>
-                      setSelectedStudentForModal({
-                        id: st.id,
-                        name: st.name,
-                        email: st.email,
-                        xp: st.xp || 850,
-                        progress: 85,
-                      })
-                    }
-                    className="p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-cyan-400 bg-slate-50/50 dark:bg-slate-800/40 cursor-pointer transition-all flex items-center justify-between group"
-                  >
-                    <div className="flex items-center gap-2.5">
-                      <div className="w-8 h-8 rounded-xl bg-cyan-100 dark:bg-cyan-950/80 flex items-center justify-center text-xs font-bold font-mono text-cyan-600">
-                        {st.name.charAt(0)}
-                      </div>
-                      <div>
-                        <div className="text-xs font-bold text-slate-900 dark:text-white group-hover:text-cyan-500 transition-colors">
-                          {st.name}
+              {selectedClass.students.length > 0 ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  {selectedClass.students.map((st) => (
+                    <div
+                      key={st.id}
+                      onClick={() => setSelectedStudentForModal(st)}
+                      className="p-3.5 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-cyan-400 bg-slate-50/50 dark:bg-slate-800/40 cursor-pointer transition-all flex items-center justify-between group"
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className="w-8 h-8 rounded-xl bg-cyan-100 dark:bg-cyan-950/80 flex items-center justify-center text-xs font-bold font-mono text-cyan-600 shrink-0">
+                          {st.name.charAt(0)}
                         </div>
-                        <div className="text-[10px] text-slate-400 font-mono">
-                          Khối {st.grade || 4} · {st.xp || 850} XP
+                        <div className="min-w-0">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white group-hover:text-cyan-500 transition-colors truncate">
+                            {st.name}
+                          </div>
+                          <div className="text-[10px] text-slate-400 font-mono truncate">
+                            {st.xp} XP · {st.progress}%
+                          </div>
                         </div>
                       </div>
+                      <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-cyan-500 transition-colors shrink-0" />
                     </div>
-                    <ExternalLink className="w-3.5 h-3.5 text-slate-400 group-hover:text-cyan-500 transition-colors" />
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/40 text-xs text-slate-500 text-center">
+                  Lớp học này chưa có học sinh nào trong danh sách.
+                </div>
+              )}
+
+              {/* Add Student to Class form */}
+              <form onSubmit={handleAddStudentToClass} className="pt-3 border-t border-slate-100 dark:border-slate-800 space-y-2">
+                <div className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
+                  <UserPlus className="w-3.5 h-3.5 text-emerald-500" />
+                  <span>Thêm học sinh vào lớp {selectedClass.name}:</span>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2">
+                  <select
+                    value={addStudentEmail}
+                    onChange={(e) => setAddStudentEmail(e.target.value)}
+                    className="flex-1 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
+                  >
+                    <option value="">-- Chọn học sinh từ hệ thống --</option>
+                    {availableStudentsToAdd.map((s) => (
+                      <option key={s.id} value={s.email}>
+                        {s.name} ({s.email} · Lớp {s.grade || 4})
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    type="submit"
+                    disabled={!addStudentEmail || isAddingStudent}
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-semibold transition-colors disabled:opacity-50"
+                  >
+                    {isAddingStudent ? 'Đang thêm...' : 'Thêm vào lớp'}
+                  </button>
+                </div>
+                {addStudentError && (
+                  <p className="text-[11px] text-rose-500">{addStudentError}</p>
+                )}
+              </form>
             </div>
           )}
 
@@ -293,47 +411,53 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </button>
             </div>
 
-            <div className="space-y-3">
-              {assignments.map((a) => (
-                <div
-                  key={a.id}
-                  className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
-                >
-                  <div className="space-y-1">
-                    <div className="text-xs font-semibold text-slate-400">
-                      {a.className} · Hạn nộp: {new Date(a.deadline).toLocaleDateString('vi-VN')}
-                    </div>
-                    <div className="text-sm font-bold text-slate-900 dark:text-white">
-                      {a.title}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-4">
-                    <div className="text-right">
-                      <div className="text-xs font-bold text-slate-900 dark:text-white font-mono">
-                        {a.completedCount}/{a.totalStudents} Nộp
-                      </div>
-                      <div className="text-[10px] text-slate-400">
-                        ({Math.round((a.completedCount / a.totalStudents) * 100)}%)
-                      </div>
-                    </div>
-
-                    <button
-                      onClick={() => onNavigate('assignment-manager')}
-                      className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 transition-colors"
+            {assignments.length > 0 ? (
+              <div className="space-y-3">
+                {assignments.map((a) => {
+                  const pct = a.totalStudents > 0 ? Math.round((a.completedCount / a.totalStudents) * 100) : 0;
+                  return (
+                    <div
+                      key={a.id}
+                      className="bg-white dark:bg-slate-900 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4"
                     >
-                      Chi tiết
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-semibold text-slate-400">
+                          {a.className} · Hạn nộp: {new Date(a.deadline).toLocaleDateString('vi-VN')}
+                        </div>
+                        <div className="text-sm font-bold text-slate-900 dark:text-white">
+                          {a.title}
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-4">
+                        <div className="text-right">
+                          <div className="text-xs font-bold text-slate-900 dark:text-white font-mono">
+                            {a.completedCount}/{a.totalStudents} Nộp
+                          </div>
+                          <div className="text-[10px] text-slate-400">({pct}%)</div>
+                        </div>
+
+                        <button
+                          onClick={() => onNavigate('assignment-manager')}
+                          className="px-3 py-1.5 text-xs font-medium text-slate-700 dark:text-slate-200 bg-slate-100 dark:bg-slate-800 rounded-lg hover:bg-slate-200 transition-colors"
+                        >
+                          Chi tiết
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="bg-white dark:bg-slate-900 p-6 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-center text-xs text-slate-500">
+                Chưa có bài tập nào được giao.
+              </div>
+            )}
           </div>
         </div>
 
-        {/* Right 1 Col: AI Studio Shortcuts & Misconceptions Radar */}
+        {/* Right 1 Col */}
         <div className="space-y-6">
-          {/* AI Module Shortcuts */}
           <div className="bg-gradient-to-br from-slate-900 to-indigo-950 text-white p-6 rounded-3xl border border-indigo-900/60 shadow-xl space-y-4">
             <span className="text-xs font-semibold text-cyan-300 uppercase tracking-wider">
               EduBot Teacher AI Toolkit
@@ -380,24 +504,32 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             </div>
           </div>
 
-          {/* Class Misconception Radar */}
+          {/* Real Misconception Radar */}
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-3">
             <div className="flex items-center gap-2 text-rose-600 dark:text-rose-400 font-bold text-sm">
               <AlertCircle className="w-4 h-4" />
               <span>Phân tích lỗi sai thường gặp của học sinh</span>
             </div>
             <p className="text-xs text-slate-500 leading-relaxed">
-              Dựa trên kết quả nộp bài tự động được hệ thống thống kê:
+              Thống kê trực tiếp từ {submissions.length} lượt nộp bài trên hệ thống:
             </p>
 
-            <div className="space-y-2 text-xs">
-              <div className="p-3 rounded-xl bg-rose-50/70 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/40 text-rose-900 dark:text-rose-200">
-                <strong>Nhầm lẫn rút gọn phân số:</strong> 34% học sinh quên chia mẫu số khi chia tử số.
+            {topMisconceptions.length > 0 ? (
+              <div className="space-y-2 text-xs">
+                {topMisconceptions.map(([tag, count], idx) => (
+                  <div
+                    key={idx}
+                    className="p-3 rounded-xl bg-rose-50/70 dark:bg-rose-950/20 border border-rose-100 dark:border-rose-900/40 text-rose-900 dark:text-rose-200"
+                  >
+                    <strong>Ghi nhận {count} lượt:</strong> {tag}
+                  </div>
+                ))}
               </div>
-              <div className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-100 dark:border-amber-900/40 text-amber-900 dark:text-amber-200">
-                <strong>Viết hoa danh từ riêng:</strong> 18% học sinh chưa viết hoa chữ cái đầu của địa danh ghép.
+            ) : (
+              <div className="p-3 rounded-xl bg-emerald-50/60 dark:bg-emerald-950/20 border border-emerald-100 dark:border-emerald-900/40 text-xs text-emerald-700 dark:text-emerald-300">
+                Chưa phát hiện lỗi sai phổ biến trong các bài nộp hiện tại.
               </div>
-            </div>
+            )}
           </div>
         </div>
       </div>
@@ -461,10 +593,10 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
         </div>
       )}
 
-      {/* Student Performance Profile Modal */}
       {selectedStudentForModal && (
         <StudentDetailModal
           student={selectedStudentForModal}
+          authToken={authToken}
           onClose={() => setSelectedStudentForModal(null)}
         />
       )}

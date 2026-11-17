@@ -4,14 +4,18 @@
  */
 
 import React, { useState } from 'react';
-import { Sparkles, FileCheck, CheckCircle2, AlertTriangle, RefreshCw, Layers } from 'lucide-react';
+import { Sparkles, FileCheck, RefreshCw, Layers, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { AiDraftItem } from '../../types/index.ts';
 
 interface AiKnowledgeStandardizerProps {
+  authToken?: string | null;
   onDraftCreated: (draft: AiDraftItem) => void;
 }
 
-export const AiKnowledgeStandardizer: React.FC<AiKnowledgeStandardizerProps> = ({ onDraftCreated }) => {
+export const AiKnowledgeStandardizer: React.FC<AiKnowledgeStandardizerProps> = ({
+  authToken,
+  onDraftCreated,
+}) => {
   const [grade, setGrade] = useState(4);
   const [subject, setSubject] = useState('toan');
   const [lessonTitle, setLessonTitle] = useState('Rút gọn phân số và phân số tối giản');
@@ -20,16 +24,23 @@ export const AiKnowledgeStandardizer: React.FC<AiKnowledgeStandardizerProps> = (
   );
 
   const [isLoading, setIsLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [savedSuccess, setSavedSuccess] = useState(false);
   const [analysisResult, setAnalysisResult] = useState<string | null>(null);
 
   const handleStandardize = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setErrorMsg('');
+    setSavedSuccess(false);
 
     try {
       const res = await fetch('/api/ai/teacher/standardize-knowledge', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
         body: JSON.stringify({
           rawContent,
           grade,
@@ -39,12 +50,15 @@ export const AiKnowledgeStandardizer: React.FC<AiKnowledgeStandardizerProps> = (
       });
 
       const data = await res.json();
-      if (data.success && data.draft) {
+      if (res.ok && data.success && data.draft) {
         setAnalysisResult(data.draft.content.analysis);
         onDraftCreated(data.draft);
+        setSavedSuccess(true);
+      } else {
+        setErrorMsg(data.error || 'Không thể chuẩn hóa kiến thức lúc này.');
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      setErrorMsg('Lỗi kết nối tới máy chủ AI. Vui lòng thử lại.');
     } finally {
       setIsLoading(false);
     }
@@ -52,7 +66,6 @@ export const AiKnowledgeStandardizer: React.FC<AiKnowledgeStandardizerProps> = (
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 pb-16">
-      {/* Header */}
       <div className="bg-gradient-to-r from-blue-950 via-slate-900 to-indigo-950 text-white p-6 sm:p-8 rounded-3xl border border-blue-800/40 shadow-xl space-y-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-cyan-400">
           <FileCheck className="w-4 h-4" />
@@ -66,8 +79,14 @@ export const AiKnowledgeStandardizer: React.FC<AiKnowledgeStandardizerProps> = (
         </p>
       </div>
 
+      {errorMsg && (
+        <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Form Inputs (5 cols) */}
         <div className="lg:col-span-5 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <h2 className="text-base font-bold text-slate-900 dark:text-white font-display">
             Nội dung cần thẩm định
@@ -156,7 +175,6 @@ export const AiKnowledgeStandardizer: React.FC<AiKnowledgeStandardizerProps> = (
           </form>
         </div>
 
-        {/* Output Display (7 cols) */}
         <div className="lg:col-span-7 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
             <h3 className="text-sm font-bold text-slate-900 dark:text-white font-display flex items-center gap-2">
@@ -167,6 +185,13 @@ export const AiKnowledgeStandardizer: React.FC<AiKnowledgeStandardizerProps> = (
               CTGDPT 2018 - 2026
             </span>
           </div>
+
+          {savedSuccess && (
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+              <span>Đã lưu báo cáo vào Hàng đợi duyệt học liệu.</span>
+            </div>
+          )}
 
           <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm text-slate-800 dark:text-slate-200 leading-relaxed font-mono whitespace-pre-wrap max-h-[500px] overflow-y-auto">
             {analysisResult ? (

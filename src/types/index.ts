@@ -208,3 +208,13 @@ export interface AuditLog {
   timestamp: string;
   status: 'success' | 'warning' | 'info';
 }
+
+export interface SystemSettings {
+  childSafetyFilterEnabled: boolean;
+  parentalConsentRequired: boolean;
+  dataRetentionDays: number;
+  aiMaxTokensPerDay: number;
+  curriculumStandard: string;
+  curriculumVersionYear: number;
+  maintenanceMode: boolean;
+}

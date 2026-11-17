@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AiDraftItem } from '../../types/index.ts';
-import { CheckCircle2, XCircle, Clock, FileText, Send, Sparkles, MessageSquare } from 'lucide-react';
+import { CheckCircle2, XCircle, Send, MessageSquare } from 'lucide-react';
 
 interface ContentReviewerProps {
   drafts: AiDraftItem[];
@@ -15,20 +15,35 @@ interface ContentReviewerProps {
 export const ContentReviewer: React.FC<ContentReviewerProps> = ({ drafts, onDraftStatusChange }) => {
   const [selectedDraftId, setSelectedDraftId] = useState<string>(drafts[0]?.id || '');
   const [teacherNotes, setTeacherNotes] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'approved'>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'draft' | 'approved' | 'rejected' | 'published'>('all');
 
   const filteredDrafts = drafts.filter((d) => (statusFilter === 'all' ? true : d.status === statusFilter));
-  const activeDraft = drafts.find((d) => d.id === selectedDraftId) || drafts[0];
+  const activeDraft = filteredDrafts.find((d) => d.id === selectedDraftId) || filteredDrafts[0];
+
+  useEffect(() => {
+    setTeacherNotes(activeDraft?.teacherNotes || '');
+  }, [activeDraft?.id]);
 
   const handleReviewAction = (status: 'approved' | 'rejected' | 'published') => {
     if (!activeDraft) return;
     onDraftStatusChange(activeDraft.id, status, teacherNotes);
-    setTeacherNotes('');
+  };
+
+  const getStatusBadge = (status: AiDraftItem['status']) => {
+    switch (status) {
+      case 'approved':
+        return { cls: 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40', label: 'Đã duyệt' };
+      case 'published':
+        return { cls: 'bg-purple-50 text-purple-600 dark:bg-purple-950/40', label: 'Đã xuất bản' };
+      case 'rejected':
+        return { cls: 'bg-rose-50 text-rose-600 dark:bg-rose-950/40', label: 'Bị từ chối' };
+      default:
+        return { cls: 'bg-amber-50 text-amber-600 dark:bg-amber-950/40', label: 'Chờ duyệt' };
+    }
   };
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-16">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-extrabold text-slate-900 dark:text-white font-display">
           Hàng Đợi Kiểm Duyệt Học Liệu AI
@@ -39,68 +54,73 @@ export const ContentReviewer: React.FC<ContentReviewerProps> = ({ drafts, onDraf
       </div>
 
       {/* Filter tabs */}
-      <div className="flex items-center gap-2">
-        {(['all', 'draft', 'approved'] as const).map((st) => (
+      <div className="flex flex-wrap items-center gap-2">
+        {(
+          [
+            { id: 'all', label: 'Tất cả bản ghi' },
+            { id: 'draft', label: 'Chờ duyệt' },
+            { id: 'approved', label: 'Đã duyệt' },
+            { id: 'published', label: 'Đã xuất bản' },
+            { id: 'rejected', label: 'Bị từ chối' },
+          ] as const
+        ).map((st) => (
           <button
-            key={st}
-            onClick={() => setStatusFilter(st)}
+            key={st.id}
+            onClick={() => setStatusFilter(st.id)}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
-              statusFilter === st
+              statusFilter === st.id
                 ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900'
                 : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-400 hover:text-slate-900'
             }`}
           >
-            {st === 'all' ? 'Tất cả bản ghi' : st === 'draft' ? 'Chờ duyệt (Draft)' : 'Đã duyệt (Approved)'}
+            {st.label}
           </button>
         ))}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Left List (4 cols) */}
         <div className="lg:col-span-4 space-y-3">
-          {filteredDrafts.map((d) => {
-            const isSelected = d.id === activeDraft?.id;
-            return (
-              <div
-                key={d.id}
-                onClick={() => setSelectedDraftId(d.id)}
-                className={`p-4 rounded-2xl border cursor-pointer transition-all ${
-                  isSelected
-                    ? 'border-cyan-500 bg-cyan-50/50 dark:bg-cyan-950/20 shadow-sm'
-                    : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 bg-white dark:bg-slate-900'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[10px] font-mono uppercase text-slate-400">
-                    Khối {d.grade} · {d.type}
-                  </span>
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                      d.status === 'approved'
-                        ? 'bg-emerald-50 text-emerald-600 dark:bg-emerald-950/40'
-                        : d.status === 'published'
-                        ? 'bg-purple-50 text-purple-600 dark:bg-purple-950/40'
-                        : 'bg-amber-50 text-amber-600 dark:bg-amber-950/40'
-                    }`}
-                  >
-                    {d.status === 'draft' ? 'Chờ duyệt' : d.status === 'approved' ? 'Đã duyệt' : 'Đã xuất bản'}
-                  </span>
-                </div>
+          {filteredDrafts.length > 0 ? (
+            filteredDrafts.map((d) => {
+              const isSelected = d.id === activeDraft?.id;
+              const badge = getStatusBadge(d.status);
+              return (
+                <div
+                  key={d.id}
+                  onClick={() => setSelectedDraftId(d.id)}
+                  className={`p-4 rounded-2xl border cursor-pointer transition-all ${
+                    isSelected
+                      ? 'border-cyan-500 bg-cyan-50/50 dark:bg-cyan-950/20 shadow-sm'
+                      : 'border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700 bg-white dark:bg-slate-900'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[10px] font-mono uppercase text-slate-400">
+                      Khối {d.grade} · {d.type}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${badge.cls}`}>
+                      {badge.label}
+                    </span>
+                  </div>
 
-                <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-1">
-                  {d.title}
-                </h3>
+                  <h3 className="text-sm font-bold text-slate-900 dark:text-white mt-1">
+                    {d.title}
+                  </h3>
 
-                <div className="text-[11px] text-slate-500 mt-2 flex items-center justify-between">
-                  <span>{d.createdBy}</span>
-                  <span className="font-mono">{new Date(d.createdAt).toLocaleDateString('vi-VN')}</span>
+                  <div className="text-[11px] text-slate-500 mt-2 flex items-center justify-between">
+                    <span>{d.createdBy}</span>
+                    <span className="font-mono">{new Date(d.createdAt).toLocaleDateString('vi-VN')}</span>
+                  </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })
+          ) : (
+            <div className="p-6 rounded-2xl border border-dashed border-slate-200 dark:border-slate-800 text-center text-xs text-slate-400">
+              Không có bản ghi nào ở trạng thái này.
+            </div>
+          )}
         </div>
 
-        {/* Right Detail Pane (8 cols) */}
         <div className="lg:col-span-8 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-6">
           {activeDraft ? (
             <>
@@ -116,8 +136,8 @@ export const ContentReviewer: React.FC<ContentReviewerProps> = ({ drafts, onDraf
                   </h2>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  {activeDraft.status === 'draft' && (
+                <div className="flex flex-wrap items-center gap-2">
+                  {(activeDraft.status === 'draft' || activeDraft.status === 'rejected') && (
                     <>
                       <button
                         onClick={() => handleReviewAction('approved')}
@@ -127,13 +147,15 @@ export const ContentReviewer: React.FC<ContentReviewerProps> = ({ drafts, onDraf
                         <span>Phê duyệt</span>
                       </button>
 
-                      <button
-                        onClick={() => handleReviewAction('rejected')}
-                        className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors"
-                      >
-                        <XCircle className="w-3.5 h-3.5" />
-                        <span>Yêu cầu sửa lại</span>
-                      </button>
+                      {activeDraft.status !== 'rejected' && (
+                        <button
+                          onClick={() => handleReviewAction('rejected')}
+                          className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white text-xs font-semibold flex items-center gap-1.5 transition-colors"
+                        >
+                          <XCircle className="w-3.5 h-3.5" />
+                          <span>Yêu cầu sửa lại</span>
+                        </button>
+                      )}
                     </>
                   )}
 
@@ -149,14 +171,12 @@ export const ContentReviewer: React.FC<ContentReviewerProps> = ({ drafts, onDraf
                 </div>
               </div>
 
-              {/* Draft Content Box */}
               <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm text-slate-800 dark:text-slate-200 leading-relaxed font-mono whitespace-pre-wrap max-h-[420px] overflow-y-auto">
                 {activeDraft.content.text ||
                   activeDraft.content.analysis ||
                   JSON.stringify(activeDraft.content, null, 2)}
               </div>
 
-              {/* Pedagogical Notes for audit */}
               <div className="space-y-2 pt-2">
                 <label className="text-xs font-semibold text-slate-700 dark:text-slate-300 flex items-center gap-1.5">
                   <MessageSquare className="w-3.5 h-3.5 text-cyan-500" />
@@ -164,7 +184,7 @@ export const ContentReviewer: React.FC<ContentReviewerProps> = ({ drafts, onDraf
                 </label>
                 <textarea
                   rows={2}
-                  value={teacherNotes || activeDraft.teacherNotes || ''}
+                  value={teacherNotes}
                   onChange={(e) => setTeacherNotes(e.target.value)}
                   placeholder="Nhập nhận xét hoặc phương án điều chỉnh sư phạm trước khi phê duyệt..."
                   className="w-full p-3 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
@@ -172,7 +192,7 @@ export const ContentReviewer: React.FC<ContentReviewerProps> = ({ drafts, onDraf
               </div>
             </>
           ) : (
-            <div className="text-center py-16 text-slate-400">
+            <div className="text-center py-16 text-slate-400 text-xs">
               Không có bản ghi nào được chọn.
             </div>
           )}

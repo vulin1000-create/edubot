@@ -4,14 +4,15 @@
  */
 
 import React, { useState } from 'react';
-import { Sparkles, HelpCircle, CheckCircle2, RefreshCw, FileQuestion } from 'lucide-react';
+import { Sparkles, RefreshCw, FileQuestion, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { AiDraftItem } from '../../types/index.ts';
 
 interface AiQuizGeneratorProps {
+  authToken?: string | null;
   onDraftCreated: (draft: AiDraftItem) => void;
 }
 
-export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ onDraftCreated }) => {
+export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ authToken, onDraftCreated }) => {
   const [grade, setGrade] = useState(4);
   const [subject, setSubject] = useState('toan');
   const [topic, setTopic] = useState('Phân số bằng nhau, quy đồng và rút gọn phân số');
@@ -19,6 +20,8 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ onDraftCreated
   const [cognitiveLevels, setCognitiveLevels] = useState(['nhan_biet', 'thong_hieu', 'van_dung']);
 
   const [isLoading, setIsLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+  const [savedSuccess, setSavedSuccess] = useState(false);
   const [quizText, setQuizText] = useState<string | null>(null);
 
   const toggleLevel = (lvl: string) => {
@@ -34,11 +37,16 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ onDraftCreated
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
+    setErrorMsg('');
+    setSavedSuccess(false);
 
     try {
       const res = await fetch('/api/ai/teacher/generate-quiz', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
         body: JSON.stringify({
           grade,
           subject,
@@ -49,12 +57,15 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ onDraftCreated
       });
 
       const data = await res.json();
-      if (data.success && data.draft) {
+      if (res.ok && data.success && data.draft) {
         setQuizText(data.draft.content.text);
         onDraftCreated(data.draft);
+        setSavedSuccess(true);
+      } else {
+        setErrorMsg(data.error || 'Không thể tạo bộ đề kiểm tra lúc này.');
       }
-    } catch (err) {
-      console.error(err);
+    } catch {
+      setErrorMsg('Lỗi kết nối tới máy chủ AI. Vui lòng thử lại.');
     } finally {
       setIsLoading(false);
     }
@@ -62,7 +73,6 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ onDraftCreated
 
   return (
     <div className="max-w-4xl mx-auto space-y-8 pb-16">
-      {/* Header */}
       <div className="bg-gradient-to-r from-purple-950 via-slate-900 to-indigo-950 text-white p-6 sm:p-8 rounded-3xl border border-purple-800/40 shadow-xl space-y-2">
         <div className="flex items-center gap-2 text-xs font-semibold text-purple-400">
           <FileQuestion className="w-4 h-4" />
@@ -76,8 +86,14 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ onDraftCreated
         </p>
       </div>
 
+      {errorMsg && (
+        <div className="p-3.5 rounded-2xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-800 text-xs text-rose-700 dark:text-rose-300 flex items-center gap-2">
+          <AlertCircle className="w-4 h-4 shrink-0" />
+          <span>{errorMsg}</span>
+        </div>
+      )}
+
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Form Inputs (5 cols) */}
         <div className="lg:col-span-5 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <h2 className="text-base font-bold text-slate-900 dark:text-white font-display">
             Ma trận thông số đề thi
@@ -193,7 +209,6 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ onDraftCreated
           </form>
         </div>
 
-        {/* Output Display (7 cols) */}
         <div className="lg:col-span-7 bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm space-y-4">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
             <h3 className="text-sm font-bold text-slate-900 dark:text-white font-display flex items-center gap-2">
@@ -204,6 +219,13 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ onDraftCreated
               Có thang điểm & Đáp án
             </span>
           </div>
+
+          {savedSuccess && (
+            <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
+              <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
+              <span>Đã lưu bộ đề vào Hàng đợi duyệt học liệu.</span>
+            </div>
+          )}
 
           <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm text-slate-800 dark:text-slate-200 leading-relaxed font-mono whitespace-pre-wrap max-h-[500px] overflow-y-auto">
             {quizText ? (
