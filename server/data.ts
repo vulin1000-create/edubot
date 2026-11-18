@@ -14,7 +14,8 @@ import {
   StudentSubmission,
   AiDraftItem,
   AuditLog,
-  KnowledgeNode
+  KnowledgeNode,
+  AcademicYear
 } from '../src/types/index.ts';
 
 export const initialUsers: User[] = [
@@ -32,6 +33,7 @@ export const initialUsers: User[] = [
     name: 'Cô Nguyễn Mai',
     email: 'comai@edubot.edu.vn',
     role: 'teacher',
+    teacherApprovalStatus: 'approved',
     school: 'Trường Tiểu học Thăng Long (Hà Nội)',
     avatar: 'https://api.dicebear.com/7.x/avataaars/svg?seed=MaiNguyen',
     createdAt: '2026-01-15T09:30:00Z',
@@ -188,6 +190,16 @@ export const initialSubjects: CurriculumSubject[] = [
     icon: 'HeartHandshake',
     color: '#ea580c', // Orange
     description: 'Giáo dục hành vi văn minh, lòng biết ơn cha mẹ thầy cô, an toàn giao thông và kỹ năng sống.',
+  },
+  {
+    id: 'cong-nghe',
+    name: 'Công nghệ',
+    code: 'TECH',
+    grades: [3, 4, 5],
+    category: 'compulsory',
+    icon: 'Wrench',
+    color: '#0d9488',
+    description: 'Công nghệ và đời sống, thủ công kỹ thuật, mô hình lắp ghép và an toàn thiết bị gia đình.',
   }
 ];
 
@@ -1491,3 +1503,241 @@ export const initialAuditLogs: AuditLog[] = [
     status: 'info'
   }
 ];
+
+export const initialAcademicYears: AcademicYear[] = [
+  {
+    id: 'ay-2025-2026',
+    name: 'Năm học 2025 – 2026',
+    startDate: '2025-09-05',
+    endDate: '2026-05-31',
+    isActive: true,
+  },
+  {
+    id: 'ay-2026-2027',
+    name: 'Năm học 2026 – 2027',
+    startDate: '2026-09-05',
+    endDate: '2027-05-31',
+    isActive: false,
+  }
+];
+
+// Bổ sung khung học liệu mẫu cho các môn ưu tiên Lớp 1–5 (trạng thái NEEDS_REVIEW / DRAFT chờ đối chiếu SGK Kết nối tri thức)
+initialLessons.push(
+  {
+    id: 'lesson-viet-101-draft',
+    topicId: 'topic-viet-g1-1',
+    subjectId: 'tieng-viet',
+    grade: 1,
+    semester: 1,
+    title: '[Mẫu] Nhận biết âm chữ, dấu thanh và ghép vần cơ bản',
+    lessonCode: 'TV1-CH1-DRAFT',
+    order: 2,
+    sourceBook: 'Kết nối tri thức với cuộc sống (Chờ đối chiếu số trang SGK bản in)',
+    objectives: [
+      'Nhận diện đúng mặt chữ, phát âm chuẩn âm đầu và các thanh điệu tiếng Việt.',
+      'Ghép vần đơn giản và đọc trơn từ khóa quen thuộc.'
+    ],
+    coreKnowledge: [
+      'Tiếng Việt có 6 thanh điệu: thanh ngang, huyền, sắc, hỏi, ngã, nặng.',
+      'Mỗi tiếng gồm âm đầu (hoặc khuyết), vần và thanh điệu.'
+    ],
+    termsAndDefinitions: [
+      { term: 'Thanh điệu', definition: 'Độ cao thấp của giọng khi phát âm một tiếng (sắc, huyền, hỏi, ngã, nặng, ngang).' }
+    ],
+    illustrations: ['Thẻ chữ cái kèm hình minh họa đồ vật gần gũi lứa tuổi Lớp 1.'],
+    commonMisconceptions: ['Nhầm dấu hỏi (?) và dấu ngã (~) khi viết chính tả.'],
+    summary: 'Khung bài học mẫu môn Tiếng Việt Lớp 1 đang ở trạng thái chờ giáo viên/quản trị viên đối chiếu sách giáo khoa.',
+    officialReference: {
+      docNumber: 'TT 32/2018/TT-BGDĐT (Dự thảo đối chiếu)',
+      issueDate: '2018-12-26',
+      curriculumVersion: 'GDPT-2018'
+    },
+    status: 'NEEDS_REVIEW'
+  },
+  {
+    id: 'lesson-tnxh-201-draft',
+    topicId: 'topic-math-g2-1',
+    subjectId: 'tu-nhien-xa-hoi',
+    grade: 2,
+    semester: 1,
+    title: '[Mẫu] Gia đình, trường học và giữ gìn vệ sinh môi trường sống',
+    lessonCode: 'TNXH2-CH1-DRAFT',
+    order: 2,
+    sourceBook: 'Kết nối tri thức với cuộc sống (Chờ đối chiếu bản in SGK)',
+    objectives: [
+      'Nêu được việc làm thể hiện tình cảm gắn bó, trách nhiệm với người thân và lớp học.',
+      'Thực hành giữ vệ sinh trường lớp, bỏ rác đúng nơi quy định.'
+    ],
+    coreKnowledge: [
+      'Các thành viên trong gia đình cùng chia sẻ công việc phù hợp lứa tuổi.',
+      'Giữ lớp học sạch sẽ giúp bảo vệ sức khỏe và học tập vui vẻ.'
+    ],
+    termsAndDefinitions: [
+      { term: 'Môi trường lớp học', definition: 'Không gian học tập chung cần được giữ gìn gọn gàng, sạch sẽ.' }
+    ],
+    illustrations: ['Tranh minh họa học sinh trực nhật lớp và phân loại rác thải.'],
+    commonMisconceptions: ['Cho rằng việc giữ vệ sinh trường lớp chỉ là nhiệm vụ của cô lao công.'],
+    summary: 'Nội dung mẫu Tự nhiên và Xã hội Lớp 2 chờ đối chiếu chuyên môn.',
+    officialReference: {
+      docNumber: 'TT 32/2018/TT-BGDĐT (Dự thảo đối chiếu)',
+      issueDate: '2018-12-26',
+      curriculumVersion: 'GDPT-2018'
+    },
+    status: 'NEEDS_REVIEW'
+  },
+  {
+    id: 'lesson-eth-201-draft',
+    topicId: 'topic-math-g2-1',
+    subjectId: 'dao-duc',
+    grade: 2,
+    semester: 1,
+    title: '[Mẫu] Kính trọng thầy giáo, cô giáo và yêu quý bạn bè',
+    lessonCode: 'DD2-CH1-DRAFT',
+    order: 3,
+    sourceBook: 'Kết nối tri thức với cuộc sống (Chờ đối chiếu bản in SGK)',
+    objectives: [
+      'Biết nói lời lễ phép, lắng nghe thầy cô và giúp đỡ bạn bè trong học tập.',
+      'Thực hiện hành vi ứng xử lịch sự, thân thiện.'
+    ],
+    coreKnowledge: [
+      'Chào hỏi lễ phép khi gặp thầy cô, người lớn.',
+      'Không trêu chọc, nói lời gây tổn thương bạn bè.'
+    ],
+    termsAndDefinitions: [
+      { term: 'Tôn trọng', definition: 'Biết lắng nghe, cư xử đúng mực và không xâm phạm quyền của người khác.' }
+    ],
+    illustrations: ['Tình huống giao tiếp trong sân trường tiểu học.'],
+    commonMisconceptions: ['Nghĩ rằng trêu đùa quá mức chỉ là trò vui bình thường.'],
+    summary: 'Học liệu mẫu môn Đạo đức Lớp 2 ở trạng thái DRAFT chờ thẩm định.',
+    officialReference: {
+      docNumber: 'TT 32/2018/TT-BGDĐT (Dự thảo đối chiếu)',
+      issueDate: '2018-12-26',
+      curriculumVersion: 'GDPT-2018'
+    },
+    status: 'DRAFT'
+  },
+  {
+    id: 'lesson-inf-301-draft',
+    topicId: 'topic-inf-g3-1',
+    subjectId: 'tin-hoc',
+    grade: 3,
+    semester: 1,
+    title: '[Mẫu] Thông tin, quyết định và làm quen với bàn phím máy tính',
+    lessonCode: 'TIN3-CH1-DRAFT',
+    order: 2,
+    sourceBook: 'Kết nối tri thức với cuộc sống (Chờ đối chiếu bản in SGK)',
+    objectives: [
+      'Nhận biết được ba dạng thông tin thường gặp: văn bản, âm thanh, hình ảnh.',
+      'Ngồi đúng tư thế và gõ đúng hàng phím cơ sở bằng 10 ngón.'
+    ],
+    coreKnowledge: [
+      'Con người tiếp nhận thông tin để đưa ra quyết định.',
+      'Hàng phím cơ sở gồm các phím A, S, D, F, G, H, J, K, L, ;.'
+    ],
+    termsAndDefinitions: [
+      { term: 'Thông tin', definition: 'Những gì con người tiếp nhận được từ thế giới xung quanh qua các giác quan.' }
+    ],
+    illustrations: ['Sơ đồ bàn phím chuẩn và tư thế ngồi máy tính đúng cho trẻ nhỏ.'],
+    commonMisconceptions: ['Nhìn bàn phím và gõ bằng hai ngón trỏ thay vì đặt tay ở hàng cơ sở.'],
+    summary: 'Khung bài học mẫu môn Tin học Lớp 3 cần thẩm định trước khi giảng dạy đại trà.',
+    officialReference: {
+      docNumber: 'TT 32/2018/TT-BGDĐT (Dự thảo đối chiếu)',
+      issueDate: '2018-12-26',
+      curriculumVersion: 'GDPT-2018'
+    },
+    status: 'NEEDS_REVIEW'
+  },
+  {
+    id: 'lesson-tech-301-draft',
+    topicId: 'topic-inf-g3-1',
+    subjectId: 'cong-nghe',
+    grade: 3,
+    semester: 1,
+    title: '[Mẫu] Tự nhiên, công nghệ và sử dụng đồ dùng điện an toàn',
+    lessonCode: 'CN3-CH1-DRAFT',
+    order: 3,
+    sourceBook: 'Kết nối tri thức với cuộc sống (Chờ đối chiếu bản in SGK)',
+    objectives: [
+      'Phân biệt được đối tượng tự nhiên và sản phẩm công nghệ quanh em.',
+      'Nêu được quy tắc sử dụng đèn học, quạt điện an toàn trong gia đình.'
+    ],
+    coreKnowledge: [
+      'Sản phẩm công nghệ do con người tạo ra nhằm phục vụ đời sống.',
+      'Không chạm tay ướt vào ổ cắm điện hoặc công tắc điện.'
+    ],
+    termsAndDefinitions: [
+      { term: 'Sản phẩm công nghệ', definition: 'Vật dụng do con người thiết kế, chế tạo (quạt điện, ti vi, đèn học...).' }
+    ],
+    illustrations: ['Bảng so sánh cây xanh (tự nhiên) và đèn học (công nghệ).'],
+    commonMisconceptions: ['Chạm tay vào phích cắm khi tay còn ướt nước.'],
+    summary: 'Khung bài học mẫu môn Công nghệ Lớp 3 trạng thái DRAFT.',
+    officialReference: {
+      docNumber: 'TT 32/2018/TT-BGDĐT (Dự thảo đối chiếu)',
+      issueDate: '2018-12-26',
+      curriculumVersion: 'GDPT-2018'
+    },
+    status: 'DRAFT'
+  },
+  {
+    id: 'lesson-hgi-401-draft',
+    topicId: 'topic-math-g4-1',
+    subjectId: 'lich-su-dia-li',
+    grade: 4,
+    semester: 1,
+    title: '[Mẫu] Làm quen với bản đồ, phương hướng và địa phương em',
+    lessonCode: 'LSDL4-CH1-DRAFT',
+    order: 4,
+    sourceBook: 'Kết nối tri thức với cuộc sống (Chờ đối chiếu bản in SGK)',
+    objectives: [
+      'Đọc được tên bản đồ, bảng chú giải, tỉ lệ và xác định 4 phương hướng chính trên bản đồ.',
+      'Giới thiệu được một số nét tiêu biểu về thiên nhiên và văn hóa địa phương em.'
+    ],
+    coreKnowledge: [
+      'Quy ước chung trên bản đồ: phía trên là hướng Bắc, phía dưới là hướng Nam, bên phải là hướng Đông, bên trái là hướng Tây.'
+    ],
+    termsAndDefinitions: [
+      { term: 'Bảng chú giải', definition: 'Phần giải thích ý nghĩa các ký hiệu màu sắc, đường nét trên bản đồ.' }
+    ],
+    illustrations: ['La bàn chỉ hướng Bắc – Nam – Đông – Tây và ký hiệu bản đồ cơ bản.'],
+    commonMisconceptions: ['Đảo ngược hướng Đông và hướng Tây khi xác định vị trí trên bản đồ.'],
+    summary: 'Bài học mẫu Lịch sử và Địa lí Lớp 4 chờ giáo viên đối chiếu tư liệu.',
+    officialReference: {
+      docNumber: 'TT 32/2018/TT-BGDĐT (Dự thảo đối chiếu)',
+      issueDate: '2018-12-26',
+      curriculumVersion: 'GDPT-2018'
+    },
+    status: 'NEEDS_REVIEW'
+  },
+  {
+    id: 'lesson-sci-501-draft',
+    topicId: 'topic-sci-g5-1',
+    subjectId: 'khoa-hoc',
+    grade: 5,
+    semester: 1,
+    title: '[Mẫu] Đất, nguồn năng lượng sạch và bảo vệ môi trường',
+    lessonCode: 'KH5-CH1-DRAFT',
+    order: 2,
+    sourceBook: 'Kết nối tri thức với cuộc sống (Chờ đối chiếu bản in SGK)',
+    objectives: [
+      'Trình bày được vai trò của đất và nguyên nhân gây ô nhiễm đất.',
+      'Nêu được ví dụ về năng lượng tái tạo (mặt trời, gió) trong đời sống.'
+    ],
+    coreKnowledge: [
+      'Đất chứa chất khoáng, mùn, nước và không khí cần thiết cho cây trồng.',
+      'Sử dụng năng lượng mặt trời, năng lượng gió giúp giảm phát thải bảo vệ môi trường.'
+    ],
+    termsAndDefinitions: [
+      { term: 'Năng lượng tái tạo', definition: 'Nguồn năng lượng tự nhiên được bổ sung liên tục như ánh sáng mặt trời, gió.' }
+    ],
+    illustrations: ['Mô hình pin năng lượng mặt trời và tuabin gió tại Việt Nam.'],
+    commonMisconceptions: ['Nhầm lẫn rác thải nhựa có thể tự phân hủy nhanh như lá cây.'],
+    summary: 'Bài học mẫu Khoa học Lớp 5 trạng thái NEEDS_REVIEW.',
+    officialReference: {
+      docNumber: 'TT 32/2018/TT-BGDĐT (Dự thảo đối chiếu)',
+      issueDate: '2018-12-26',
+      curriculumVersion: 'GDPT-2018'
+    },
+    status: 'NEEDS_REVIEW'
+  }
+);
+

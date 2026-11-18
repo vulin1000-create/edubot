@@ -4,7 +4,15 @@
  */
 
 import React from 'react';
-import { User, CurriculumSubject, Assignment, Lesson, StudentSubmission } from '../../types/index.ts';
+import {
+  User,
+  CurriculumSubject,
+  Assignment,
+  Lesson,
+  StudentSubmission,
+  LearningProgress,
+  isLessonVerified,
+} from '../../types/index.ts';
 import { EduBotMascot } from '../EduBotMascot.tsx';
 import {
   Flame,
@@ -16,7 +24,8 @@ import {
   CheckCircle2,
   Play,
   Sparkles,
-  Compass
+  Compass,
+  ShieldCheck,
 } from 'lucide-react';
 
 interface StudentDashboardProps {
@@ -25,12 +34,14 @@ interface StudentDashboardProps {
   assignments: Assignment[];
   lessons: Lesson[];
   submissions: StudentSubmission[];
+  learningProgress?: LearningProgress[];
   onSelectSubject: (subjectId: string) => void;
   onOpenLesson: (lessonId: string) => void;
   onOpenExercise: (exerciseSetId: string, assignmentId?: string) => void;
   onOpenTutor: () => void;
   onOpenJourney: () => void;
   onOpenKnowledgeMap?: () => void;
+  onOpenPrivacy?: () => void;
 }
 
 export const StudentDashboard: React.FC<StudentDashboardProps> = ({
@@ -39,18 +50,33 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
   assignments,
   lessons,
   submissions,
+  learningProgress = [],
   onSelectSubject,
   onOpenLesson,
   onOpenExercise,
   onOpenTutor,
   onOpenJourney,
   onOpenKnowledgeMap,
+  onOpenPrivacy,
 }) => {
   const heroImage = '/src/assets/images/future_learning_space_1793780439282.jpg';
 
   const activeAssignments = assignments.filter((a) => a.status === 'active');
-  const recentLesson = lessons[0];
-  const myCompletedCount = submissions.filter((s) => s.studentId === user.id).length;
+  const completedLessonIds = new Set(
+    learningProgress.filter((p) => p.completed).map((p) => p.lessonId)
+  );
+  const recentLesson =
+    lessons.find((l) => isLessonVerified(l.status) && !completedLessonIds.has(l.id)) ||
+    lessons.find((l) => !completedLessonIds.has(l.id)) ||
+    lessons[0];
+
+  const mySubmissions = submissions.filter((s) => s.studentId === user.id);
+  const myCompletedCount = mySubmissions.length;
+  const totalStudyMinutes = Math.round(
+    (mySubmissions.reduce((acc, s) => acc + (s.timeSpentSeconds || 0), 0) +
+      learningProgress.reduce((acc, p) => acc + (p.timeSpentSeconds || 0), 0)) /
+      60
+  );
   const currentLevel = Math.floor((user.xp ?? 0) / 200) + 1;
   const shortFirstName = user.name.trim().split(' ').slice(-1)[0] || user.name;
 
@@ -81,6 +107,25 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   <span>{user.school}</span>
                 </>
               )}
+              {onOpenPrivacy && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <button
+                    type="button"
+                    onClick={onOpenPrivacy}
+                    className={`inline-flex items-center gap-1 underline hover:no-underline ${
+                      user.parentalConsentVerified ? 'text-emerald-300' : 'text-amber-300'
+                    }`}
+                  >
+                    <ShieldCheck className="w-3.5 h-3.5" />
+                    <span>
+                      {user.parentalConsentVerified
+                        ? 'Phụ huynh đã xác thực'
+                        : 'Xác thực đồng ý phụ huynh'}
+                    </span>
+                  </button>
+                </>
+              )}
             </div>
 
             <h1 className="text-2xl sm:text-3xl md:text-4xl font-extrabold tracking-tight font-display text-white">
@@ -108,7 +153,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
                   className="px-5 py-2.5 text-xs sm:text-sm font-semibold text-white bg-gradient-to-r from-cyan-500 to-blue-600 rounded-xl hover:from-cyan-600 hover:to-blue-700 transition-all shadow-md shadow-cyan-500/25 flex items-center gap-2"
                 >
                   <Play className="w-4 h-4 fill-white" />
-                  <span>Tiếp tục học bài gần nhất</span>
+                  <span>Tiếp tục học bài gợi ý</span>
                 </button>
               )}
 
@@ -153,7 +198,9 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
             <div className="text-xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
               {user.streakDays ?? 1} Ngày
             </div>
-            <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Chuỗi học kiên trì</div>
+            <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+              {totalStudyMinutes > 0 ? `${totalStudyMinutes} phút học thực tế` : 'Chuỗi học kiên trì'}
+            </div>
           </div>
         </div>
 
@@ -187,7 +234,7 @@ export const StudentDashboard: React.FC<StudentDashboardProps> = ({
           </div>
           <div>
             <div className="text-xl font-bold text-slate-900 dark:text-white font-mono tabular-nums">
-              {myCompletedCount} Bài nộp
+              {myCompletedCount} Bài · {completedLessonIds.size} Học liệu
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400 font-medium">Đã hoàn thành thực tế</div>
           </div>

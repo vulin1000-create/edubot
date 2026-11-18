@@ -5,12 +5,18 @@
 
 import React, { useState, useEffect } from 'react';
 import { User, UserRole } from '../../types/index.ts';
-import { Bot, X, Lock, Mail, User as UserIcon } from 'lucide-react';
+import {
+  isFirebaseConfigured,
+  signInWithFirebaseGoogle,
+  sendFirebasePasswordReset,
+} from '../../lib/firebase.ts';
+import { syncFirebaseUserDocs } from '../../lib/firestoreService.ts';
+import { Bot, X, Lock, Mail, User as UserIcon, ShieldCheck } from 'lucide-react';
 
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onAuthSuccess: (user: User, token: string) => void;
+  onAuthSuccess: (user: User, token: string, source?: 'local' | 'firebase') => void;
   initialMode?: 'login' | 'register' | 'forgot';
   suggestedRole?: UserRole;
 }
@@ -53,6 +59,54 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   if (!isOpen) return null;
 
+  const handleGoogleSignIn = async () => {
+    if (!isFirebaseConfigured) {
+      setErrorMsg('Chưa cấu hình Firebase Client SDK trong biến môi trường.');
+      return;
+    }
+    setIsLoading(true);
+    setErrorMsg('');
+    setSuccessMsg('');
+    try {
+      const { idToken } = await signInWithFirebaseGoogle();
+      const res = await fetch('/api/auth/firebase-sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
+        body: JSON.stringify({
+          requestedRole: mode === 'register' && role === 'teacher' ? 'teacher' : undefined,
+          grade,
+          school,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success || !data.user) {
+        setErrorMsg(data.error || 'Không thể đồng bộ tài khoản Google với máy chủ EduBot.');
+        return;
+      }
+      syncFirebaseUserDocs(data.user).catch((syncErr) => {
+        console.warn('Firestore user profile sync note:', syncErr?.message || syncErr);
+      });
+      onAuthSuccess(data.user, idToken, 'firebase');
+      onClose();
+    } catch (err: any) {
+      const msg = String(err?.message || '');
+      if (msg.includes('popup-closed-by-user')) {
+        setErrorMsg('Bạn đã đóng cửa sổ đăng nhập Google trước khi hoàn tất.');
+      } else if (msg.includes('popup-blocked')) {
+        setErrorMsg('Trình duyệt đang chặn popup đăng nhập Google. Vui lòng cho phép popup cho trang này.');
+      } else if (msg.includes('unauthorized-domain')) {
+        setErrorMsg('Tên miền hiện tại chưa được thêm vào Authorized Domains trong Firebase Console.');
+      } else {
+        setErrorMsg(msg || 'Không thể đăng nhập bằng Google qua Firebase Auth.');
+      }
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!email.trim() || !password) {
@@ -70,7 +124,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       });
       const data = await res.json();
       if (res.ok && data.success && data.user && data.token) {
-        onAuthSuccess(data.user, data.token);
+        onAuthSuccess(data.user, data.token, 'local');
         onClose();
       } else {
         setErrorMsg(data.error || 'Email hoặc mật khẩu không chính xác.');
@@ -111,7 +165,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       });
       const data = await res.json();
       if (res.ok && data.success && data.user && data.token) {
-        onAuthSuccess(data.user, data.token);
+        onAuthSuccess(data.user, data.token, 'local');
         onClose();
       } else {
         setErrorMsg(data.error || 'Đăng ký không thành công.');
@@ -138,6 +192,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       if (res.ok && data.success) {
         setSuccessMsg(data.message);
         setOtpStep(true);
+      } else if (isFirebaseConfigured) {
+        await sendFirebasePasswordReset(email.trim());
+        setSuccessMsg(`Đã gửi email đặt lại mật khẩu Firebase tới ${email.trim()}.`);
       } else {
         setErrorMsg(data.error || 'Không tìm thấy tài khoản.');
       }
@@ -380,6 +437,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             >
               {isLoading ? 'Đang xác thực...' : 'Đăng nhập vào EduBot'}
             </button>
+
+            {isFirebaseConfigured && (
+              <div className="space-y-2 pt-1">
+                <div className="relative flex items-center justify-center text-[10px] text-slate-400 uppercase">
+                  <span className="bg-white dark:bg-slate-900 px-2 z-10">Hoặc qua Firebase Auth</span>
+                  <div className="absolute inset-x-0 h-px bg-slate-200 dark:bg-slate-800" />
+                </div>
+                <button
+                  type="button"
+                  onClick={handleGoogleSignIn}
+                  disabled={isLoading}
+                  className="w-full py-2.5 px-4 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-200 flex items-center justify-center gap-2 transition-colors disabled:opacity-60"
+                >
+                  <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                  <span>Đăng nhập bằng Google (Firebase Auth)</span>
+                </button>
+              </div>
+            )}
           </form>
         )}
 
@@ -449,7 +524,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   className="w-full p-2.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-xs text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500"
                 >
                   <option value="student">Học sinh</option>
-                  <option value="teacher">Giáo viên</option>
+                  <option value="teacher">Giáo viên (chờ Admin duyệt)</option>
                 </select>
               </div>
 
@@ -472,6 +547,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </div>
               )}
             </div>
+
+            {role === 'teacher' && (
+              <div className="p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 text-[11px] text-amber-800 dark:text-amber-300">
+                Lưu ý bảo mật: Tài khoản Giáo viên đăng ký mới sẽ ở trạng thái <strong>chờ Quản trị viên phê duyệt</strong> trước khi được mở lớp hoặc tạo học liệu.
+              </div>
+            )}
 
             <div className="space-y-1">
               <label className="text-xs font-semibold text-slate-700 dark:text-slate-300">

@@ -9,10 +9,19 @@ import {
   AuditLog,
   ResourceStatus,
   CurriculumSubject,
+  ExerciseSet,
+  AcademicYear,
   User,
   UserRole,
-  SystemSettings
+  SystemSettings,
+  isLessonVerified,
 } from '../../types/index.ts';
+import {
+  testFirestoreConnection,
+  FirestoreConnectionState,
+  firebaseProjectId,
+} from '../../lib/firebase.ts';
+import { migrateCurriculumToFirestore } from '../../lib/firestoreService.ts';
 import {
   Shield,
   FileCheck2,
@@ -28,16 +37,25 @@ import {
   BookOpen,
   CheckCircle2,
   AlertCircle,
-  Save
+  Save,
+  Plus,
+  Search,
+  UserCheck,
+  UserX,
+  CloudUpload,
+  Calendar,
+  X,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
   lessons: Lesson[];
   subjects: CurriculumSubject[];
+  exercises?: ExerciseSet[];
   auditLogs: AuditLog[];
   activeNavbarTab?: string;
   authToken?: string | null;
   onUpdateLessonStatus: (lessonId: string, status: ResourceStatus) => Promise<void> | void;
+  onLessonCreated?: (lesson: Lesson) => void;
   onAuditLogsRefresh?: () => Promise<void> | void;
 }
 
@@ -46,6 +64,7 @@ type AdminTab = 'curriculum' | 'framework' | 'users' | 'audit' | 'security';
 interface AnalyticsOverview {
   totalStudents: number;
   totalTeachers: number;
+  pendingTeachers?: number;
   totalLessons: number;
   totalSubmissions: number;
   avgScore: number;
@@ -53,20 +72,26 @@ interface AnalyticsOverview {
   curriculumVersion: string;
   aiModel: string;
   aiStatus: 'active' | 'unconfigured';
+  firebaseConfigured?: boolean;
+  firebaseProjectId?: string | null;
   persistenceMode: string;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   lessons,
   subjects,
+  exercises = [],
   auditLogs,
   activeNavbarTab,
   authToken,
   onUpdateLessonStatus,
+  onLessonCreated,
   onAuditLogsRefresh,
 }) => {
   const [selectedTab, setSelectedTab] = useState<AdminTab>('curriculum');
   const [analytics, setAnalytics] = useState<AnalyticsOverview | null>(null);
+  const [firestoreState, setFirestoreState] = useState<FirestoreConnectionState>('unconfigured');
+
   const [usersList, setUsersList] = useState<User[]>([]);
   const [usersLoading, setUsersLoading] = useState(false);
   const [usersError, setUsersError] = useState('');
@@ -79,6 +104,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const [lessonFilterGrade, setLessonFilterGrade] = useState<number | 'all'>('all');
   const [actionMessage, setActionMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Create Lesson Modal
+  const [showCreateLessonModal, setShowCreateLessonModal] = useState(false);
+  const [newLessonTitle, setNewLessonTitle] = useState('');
+  const [newLessonSubject, setNewLessonSubject] = useState('toan');
+  const [newLessonGrade, setNewLessonGrade] = useState(4);
+  const [newLessonBook, setNewLessonBook] = useState('Kết nối tri thức với cuộc sống');
+  const [newLessonDocNum, setNewLessonDocNum] = useState('TT 32/2018/TT-BGDĐT');
+  const [newLessonSummary, setNewLessonSummary] = useState('');
+  const [newLessonStatus, setNewLessonStatus] = useState<'DRAFT' | 'NEEDS_REVIEW'>('NEEDS_REVIEW');
+  const [creatingLesson, setCreatingLesson] = useState(false);
+
+  // Academic Years & Firestore Sync
+  const [academicYears, setAcademicYears] = useState<AcademicYear[]>([]);
+  const [newYearName, setNewYearName] = useState('2026 - 2027');
+  const [newYearStart, setNewYearStart] = useState('2026-09-05');
+  const [newYearEnd, setNewYearEnd] = useState('2027-05-31');
+  const [newYearActive, setNewYearActive] = useState(false);
+  const [creatingYear, setCreatingYear] = useState(false);
+  const [migratingFirestore, setMigratingFirestore] = useState(false);
+
+  // Audit log filter
+  const [auditSearch, setAuditSearch] = useState('');
+  const [auditStatusFilter, setAuditStatusFilter] = useState<'all' | 'success' | 'warning' | 'info'>('all');
+  const [filteredAuditLogs, setFilteredAuditLogs] = useState<AuditLog[]>(auditLogs);
+  const [loadingAudit, setLoadingAudit] = useState(false);
+
+  useEffect(() => {
+    setFilteredAuditLogs(auditLogs);
+  }, [auditLogs]);
 
   // Sync top navbar tab selection with internal Admin panel
   useEffect(() => {
@@ -93,21 +148,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   }, [activeNavbarTab]);
 
-  // Load real analytics overview
+  // Load real analytics overview & Firestore status
   const fetchOverview = useCallback(async () => {
     try {
-      const res = await fetch('/api/analytics/overview');
-      if (res.ok) {
-        setAnalytics(await res.json());
+      const [overviewRes, fsStatus] = await Promise.all([
+        fetch('/api/analytics/overview'),
+        testFirestoreConnection(),
+      ]);
+      if (overviewRes.ok) {
+        setAnalytics(await overviewRes.json());
       }
+      setFirestoreState(fsStatus.state);
     } catch {
-      // Keep null to display unknown state cleanly
+      // Keep graceful state
     }
   }, []);
 
   useEffect(() => {
     fetchOverview();
   }, [fetchOverview, lessons.length]);
+
+  const fetchAcademicYears = useCallback(async () => {
+    try {
+      const res = await fetch('/api/academic-years');
+      if (res.ok) {
+        setAcademicYears(await res.json());
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
 
   const fetchUsers = useCallback(async () => {
     if (!authToken) return;
@@ -151,15 +221,37 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   }, [authToken]);
 
+  const fetchFilteredAuditLogs = useCallback(async () => {
+    if (!authToken) return;
+    setLoadingAudit(true);
+    try {
+      const params = new URLSearchParams();
+      if (auditSearch.trim()) params.set('search', auditSearch.trim());
+      if (auditStatusFilter !== 'all') params.set('status', auditStatusFilter);
+      const res = await fetch(`/api/audit-logs?${params.toString()}`, {
+        headers: { Authorization: `Bearer ${authToken}` },
+      });
+      if (res.ok) {
+        setFilteredAuditLogs(await res.json());
+      }
+    } catch {
+      // fallback silently to existing prop logs
+    } finally {
+      setLoadingAudit(false);
+    }
+  }, [authToken, auditSearch, auditStatusFilter]);
+
   useEffect(() => {
     if (selectedTab === 'users') {
       fetchUsers();
+    } else if (selectedTab === 'framework') {
+      fetchAcademicYears();
     } else if (selectedTab === 'security') {
       fetchSettings();
-    } else if (selectedTab === 'audit' && onAuditLogsRefresh) {
-      onAuditLogsRefresh();
+    } else if (selectedTab === 'audit') {
+      fetchFilteredAuditLogs();
     }
-  }, [selectedTab, fetchUsers, fetchSettings, onAuditLogsRefresh]);
+  }, [selectedTab, fetchUsers, fetchAcademicYears, fetchSettings, fetchFilteredAuditLogs]);
 
   const handleRoleChange = async (userId: string, newRole: UserRole) => {
     if (!authToken) return;
@@ -187,6 +279,144 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       setActionMessage({ type: 'error', text: 'Lỗi kết nối máy chủ khi phân quyền.' });
     } finally {
       setUpdatingUserId(null);
+    }
+  };
+
+  const handleTeacherApproval = async (userId: string, decision: 'approved' | 'rejected') => {
+    if (!authToken) return;
+    setUpdatingUserId(userId);
+    setActionMessage(null);
+    try {
+      const res = await fetch(`/api/auth/users/${userId}/approve-teacher`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ decision }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setActionMessage({ type: 'error', text: data.error || 'Không thể cập nhật phê duyệt giáo viên.' });
+      } else if (data.user) {
+        setUsersList((prev) => prev.map((u) => (u.id === userId ? data.user : u)));
+        setActionMessage({
+          type: 'success',
+          text:
+            decision === 'approved'
+              ? `Đã phê duyệt tài khoản giáo viên ${data.user.email}.`
+              : `Đã từ chối quyền giáo viên cho ${data.user.email}.`,
+        });
+        fetchOverview();
+        if (onAuditLogsRefresh) onAuditLogsRefresh();
+      }
+    } catch {
+      setActionMessage({ type: 'error', text: 'Lỗi kết nối máy chủ khi duyệt giáo viên.' });
+    } finally {
+      setUpdatingUserId(null);
+    }
+  };
+
+  const handleCreateLesson = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !newLessonTitle.trim()) return;
+    setCreatingLesson(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch('/api/curriculum/lessons', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          title: newLessonTitle.trim(),
+          subjectId: newLessonSubject,
+          grade: newLessonGrade,
+          sourceBook: newLessonBook.trim(),
+          docNumber: newLessonDocNum.trim(),
+          summary: newLessonSummary.trim() || newLessonTitle.trim(),
+          status: newLessonStatus,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setActionMessage({ type: 'error', text: data.error || 'Không thể tạo bài học mới.' });
+      } else if (data.lesson) {
+        onLessonCreated?.(data.lesson);
+        setShowCreateLessonModal(false);
+        setNewLessonTitle('');
+        setNewLessonSummary('');
+        setActionMessage({
+          type: 'success',
+          text: `Đã tạo bài học "${data.lesson.title}" (${data.lesson.status}) và lập chỉ mục vào kho RAG.`,
+        });
+        fetchOverview();
+        if (onAuditLogsRefresh) onAuditLogsRefresh();
+      }
+    } catch {
+      setActionMessage({ type: 'error', text: 'Lỗi kết nối máy chủ khi tạo bài học.' });
+    } finally {
+      setCreatingLesson(false);
+    }
+  };
+
+  const handleCreateAcademicYear = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!authToken || !newYearName.trim()) return;
+    setCreatingYear(true);
+    setActionMessage(null);
+    try {
+      const res = await fetch('/api/academic-years', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          name: newYearName.trim(),
+          startDate: newYearStart,
+          endDate: newYearEnd,
+          isActive: newYearActive,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setActionMessage({ type: 'error', text: data.error || 'Không thể thêm năm học.' });
+      } else if (data.academicYear) {
+        await fetchAcademicYears();
+        setActionMessage({ type: 'success', text: `Đã tạo năm học "${data.academicYear.name}".` });
+      }
+    } catch {
+      setActionMessage({ type: 'error', text: 'Lỗi kết nối máy chủ khi thêm năm học.' });
+    } finally {
+      setCreatingYear(false);
+    }
+  };
+
+  const handleMigrateToFirestore = async () => {
+    setMigratingFirestore(true);
+    setActionMessage(null);
+    try {
+      const result = await migrateCurriculumToFirestore({
+        subjects,
+        lessons,
+        exercises,
+        academicYears,
+      });
+      setActionMessage({
+        type: 'success',
+        text: `Đã đồng bộ thành công ${result.migratedCount} bản ghi (Môn học, Bài học, Bài tập, Năm học) lên Cloud Firestore.`,
+      });
+    } catch (err: any) {
+      setActionMessage({
+        type: 'error',
+        text:
+          err?.message ||
+          'Không thể đồng bộ lên Cloud Firestore. Vui lòng đăng nhập qua Google với tài khoản Quản trị viên (vulin1000@gmail.com).',
+      });
+    } finally {
+      setMigratingFirestore(false);
     }
   };
 
@@ -219,12 +449,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const verifiedCount = lessons.filter((l) => l.status === 'verified').length;
-  const pendingCount = lessons.filter((l) => l.status === 'pending').length;
-  const unverifiedCount = lessons.filter((l) => l.status === 'unverified').length;
-  const filteredLessons = lessonFilterGrade === 'all'
-    ? lessons
-    : lessons.filter((l) => l.grade === lessonFilterGrade);
+  const verifiedCount = lessons.filter((l) => isLessonVerified(l.status)).length;
+  const pendingCount = lessons.filter((l) => l.status === 'pending' || l.status === 'NEEDS_REVIEW').length;
+  const unverifiedCount = lessons.filter(
+    (l) => !isLessonVerified(l.status) && l.status !== 'pending' && l.status !== 'NEEDS_REVIEW'
+  ).length;
+  const filteredLessons =
+    lessonFilterGrade === 'all' ? lessons : lessons.filter((l) => l.grade === lessonFilterGrade);
 
   return (
     <div className="max-w-6xl mx-auto space-y-8 pb-16">
@@ -244,9 +475,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         {/* Real AI & System Status */}
-        <div className="bg-black/40 backdrop-blur-md p-4 rounded-2xl border border-white/10 space-y-2 text-xs font-mono min-w-[270px]">
+        <div className="bg-black/40 backdrop-blur-md p-4 rounded-2xl border border-white/10 space-y-2 text-xs font-mono min-w-[290px]">
           <div className="flex items-center justify-between gap-4">
-            <span className="text-slate-400">Trạng thái AI Gateway:</span>
+            <span className="text-slate-400">AI Gateway:</span>
             {analytics?.aiStatus === 'active' ? (
               <span className="text-emerald-400 font-bold flex items-center gap-1.5">
                 <span className="w-2 h-2 rounded-full bg-emerald-400" />
@@ -260,15 +491,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             )}
           </div>
           <div className="flex items-center justify-between gap-4">
-            <span className="text-slate-400">Lưu trữ dữ liệu:</span>
-            <span className="text-amber-300 font-bold">
-              {analytics?.persistenceMode === 'in_memory' ? 'In-Memory (Tạm thời)' : 'In-Memory'}
+            <span className="text-slate-400">Cloud Firestore:</span>
+            <span
+              className={`font-bold ${
+                firestoreState === 'connected'
+                  ? 'text-emerald-400'
+                  : firestoreState === 'offline'
+                  ? 'text-amber-300'
+                  : 'text-slate-300'
+              }`}
+            >
+              {analytics?.persistenceMode === 'hybrid_firestore_and_api'
+                ? firestoreState === 'connected'
+                  ? `Đã kết nối (${firebaseProjectId})`
+                  : `Hybrid (${firestoreState})`
+                : 'In-Memory'}
             </span>
           </div>
           <div className="flex items-center justify-between gap-4">
             <span className="text-slate-400">Tài khoản hệ thống:</span>
             <span className="text-cyan-300 font-bold">
-              {analytics ? `${analytics.totalStudents} HS · ${analytics.totalTeachers} GV` : '—'}
+              {analytics
+                ? `${analytics.totalStudents} HS · ${analytics.totalTeachers} GV${
+                    analytics.pendingTeachers ? ` (${analytics.pendingTeachers} chờ)` : ''
+                  }`
+                : '—'}
             </span>
           </div>
         </div>
@@ -380,7 +627,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   {pendingCount + unverifiedCount} Bài
                 </div>
                 <div className="text-xs text-slate-500">
-                  {pendingCount} chờ duyệt · {unverifiedCount} chưa xác minh
+                  {pendingCount} chờ duyệt · {unverifiedCount} chưa xác minh/nháp
                 </div>
               </div>
             </div>
@@ -400,27 +647,36 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
           {/* Lessons Table with Status Modification */}
           <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
               <div>
                 <h2 className="text-base font-bold text-slate-900 dark:text-white font-display">
                   Danh sách bài học trong Kho dữ liệu chuẩn GDPT
                 </h2>
-                <span className="text-xs text-slate-400">Quyền Admin: Cập nhật tình trạng thẩm định pháp lý</span>
+                <span className="text-xs text-slate-400">Quyền Admin: Tạo mới và cập nhật tình trạng thẩm định pháp lý</span>
               </div>
-              <div className="flex items-center gap-1.5">
-                {(['all', 1, 2, 3, 4, 5] as const).map((g) => (
-                  <button
-                    key={String(g)}
-                    onClick={() => setLessonFilterGrade(g)}
-                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${
-                      lessonFilterGrade === g
-                        ? 'bg-purple-600 text-white'
-                        : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
-                    }`}
-                  >
-                    {g === 'all' ? 'Tất cả' : `Lớp ${g}`}
-                  </button>
-                ))}
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="flex items-center gap-1">
+                  {(['all', 1, 2, 3, 4, 5] as const).map((g) => (
+                    <button
+                      key={String(g)}
+                      onClick={() => setLessonFilterGrade(g)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold ${
+                        lessonFilterGrade === g
+                          ? 'bg-purple-600 text-white'
+                          : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'
+                      }`}
+                    >
+                      {g === 'all' ? 'Tất cả' : `Lớp ${g}`}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setShowCreateLessonModal(true)}
+                  className="px-3 py-1.5 rounded-xl bg-purple-600 hover:bg-purple-700 text-white text-xs font-semibold flex items-center gap-1.5"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Tạo bài học mới</span>
+                </button>
               </div>
             </div>
 
@@ -441,58 +697,65 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                    {filteredLessons.map((l) => (
-                      <tr key={l.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
-                        <td className="px-5 py-4">
-                          <div className="font-semibold text-slate-900 dark:text-white">{l.title}</div>
-                          <div className="font-mono text-[10px] text-cyan-600 dark:text-cyan-400">{l.lessonCode}</div>
-                        </td>
-                        <td className="px-5 py-4">
-                          Lớp {l.grade} · {l.subjectId.toUpperCase()}
-                        </td>
-                        <td className="px-5 py-4">
-                          <div>{l.officialReference.docNumber}</div>
-                          <div className="text-[10px] text-slate-400 font-mono">{l.officialReference.curriculumVersion}</div>
-                        </td>
-                        <td className="px-5 py-4">
-                          <span
-                            className={`px-2.5 py-1 rounded-md text-[10px] font-semibold inline-block ${
-                              l.status === 'verified'
-                                ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800'
-                                : l.status === 'pending'
-                                ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800'
-                                : 'bg-slate-100 text-slate-600 dark:bg-slate-800 border border-slate-300 dark:border-slate-700'
-                            }`}
-                          >
-                            {l.status === 'verified'
-                              ? 'Đã thẩm định'
-                              : l.status === 'pending'
-                              ? 'Chờ duyệt'
-                              : 'Chưa xác minh – cần bổ sung nguồn'}
-                          </span>
-                        </td>
-                        <td className="px-5 py-4 text-right">
-                          <div className="inline-flex gap-1.5">
-                            {l.status !== 'verified' && (
-                              <button
-                                onClick={() => onUpdateLessonStatus(l.id, 'verified')}
-                                className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold transition-colors"
-                              >
-                                Thẩm định
-                              </button>
-                            )}
-                            {l.status !== 'unverified' && (
-                              <button
-                                onClick={() => onUpdateLessonStatus(l.id, 'unverified')}
-                                className="px-2.5 py-1 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 text-slate-700 dark:text-slate-200 text-[11px] font-semibold transition-colors"
-                              >
-                                Gắn nhãn chưa xác minh
-                              </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
+                    {filteredLessons.map((l) => {
+                      const verified = isLessonVerified(l.status);
+                      const pending = l.status === 'pending' || l.status === 'NEEDS_REVIEW';
+                      const draft = l.status === 'DRAFT' || l.status === 'ai_draft';
+                      return (
+                        <tr key={l.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
+                          <td className="px-5 py-4">
+                            <div className="font-semibold text-slate-900 dark:text-white">{l.title}</div>
+                            <div className="font-mono text-[10px] text-cyan-600 dark:text-cyan-400">{l.lessonCode}</div>
+                          </td>
+                          <td className="px-5 py-4">
+                            Lớp {l.grade} · {l.subjectId.toUpperCase()}
+                          </td>
+                          <td className="px-5 py-4">
+                            <div>{l.officialReference.docNumber}</div>
+                            <div className="text-[10px] text-slate-400 font-mono">{l.officialReference.curriculumVersion}</div>
+                          </td>
+                          <td className="px-5 py-4">
+                            <span
+                              className={`px-2.5 py-1 rounded-md text-[10px] font-semibold inline-block ${
+                                verified
+                                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800'
+                                  : pending
+                                  ? 'bg-amber-50 text-amber-700 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800'
+                                  : 'bg-slate-100 text-slate-600 dark:bg-slate-800 border border-slate-300 dark:border-slate-700'
+                              }`}
+                            >
+                              {verified
+                                ? 'Đã thẩm định'
+                                : pending
+                                ? 'Chờ duyệt'
+                                : draft
+                                ? 'Bản nháp'
+                                : 'Chưa xác minh – cần bổ sung nguồn'}
+                            </span>
+                          </td>
+                          <td className="px-5 py-4 text-right">
+                            <div className="inline-flex gap-1.5">
+                              {!verified && (
+                                <button
+                                  onClick={() => onUpdateLessonStatus(l.id, 'verified')}
+                                  className="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold transition-colors"
+                                >
+                                  Thẩm định
+                                </button>
+                              )}
+                              {l.status !== 'unverified' && (
+                                <button
+                                  onClick={() => onUpdateLessonStatus(l.id, 'unverified')}
+                                  className="px-2.5 py-1 rounded bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 text-slate-700 dark:text-slate-200 text-[11px] font-semibold transition-colors"
+                                >
+                                  Gắn nhãn chưa xác minh
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -501,9 +764,116 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* Tab 2: Curriculum Framework (GDPT 2026) */}
+      {/* Tab 2: Curriculum Framework (GDPT 2026) & Academic Years & Firestore Sync */}
       {selectedTab === 'framework' && (
         <div className="space-y-6">
+          {/* Cloud Firestore Migration Bar */}
+          <div className="bg-white dark:bg-slate-900 p-5 rounded-3xl border border-slate-200 dark:border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="space-y-1">
+              <div className="text-sm font-bold text-slate-900 dark:text-white flex items-center gap-2">
+                <CloudUpload className="w-4 h-4 text-cyan-600" />
+                <span>Đồng bộ Kho học liệu GDPT lên Cloud Firestore</span>
+              </div>
+              <p className="text-xs text-slate-500">
+                Ghi danh mục Môn học ({subjects.length}), Bài học ({lessons.length}), Bài tập ({exercises.length}) và Năm học ({academicYears.length}) vào cơ sở dữ liệu Firebase Enterprise.
+              </p>
+            </div>
+            <button
+              onClick={handleMigrateToFirestore}
+              disabled={migratingFirestore}
+              className="px-4 py-2.5 rounded-xl bg-cyan-600 hover:bg-cyan-700 disabled:bg-cyan-400 text-white text-xs font-semibold flex items-center gap-1.5 shrink-0"
+            >
+              <CloudUpload className="w-4 h-4" />
+              <span>{migratingFirestore ? 'Đang đồng bộ...' : 'Đồng bộ Cloud Firestore'}</span>
+            </button>
+          </div>
+
+          {/* Academic Years Management */}
+          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-purple-600" />
+              <h2 className="text-base font-bold text-slate-900 dark:text-white font-display">
+                Quản lý Năm học (Academic Years)
+              </h2>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                {academicYears.length === 0 ? (
+                  <p className="text-xs text-slate-500">Đang tải danh sách năm học...</p>
+                ) : (
+                  academicYears.map((ay) => (
+                    <div
+                      key={ay.id}
+                      className="p-3 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-800/40 flex items-center justify-between text-xs"
+                    >
+                      <div>
+                        <div className="font-bold text-slate-900 dark:text-white">{ay.name}</div>
+                        <div className="text-[11px] text-slate-500 font-mono">
+                          {ay.startDate} → {ay.endDate}
+                        </div>
+                      </div>
+                      <span
+                        className={`px-2 py-0.5 rounded-md text-[10px] font-semibold ${
+                          ay.isActive
+                            ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300'
+                            : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                        }`}
+                      >
+                        {ay.isActive ? 'Đang áp dụng' : 'Lưu trữ'}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <form
+                onSubmit={handleCreateAcademicYear}
+                className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3 text-xs"
+              >
+                <div className="font-semibold text-slate-900 dark:text-white">Thêm năm học mới</div>
+                <div className="grid grid-cols-3 gap-2">
+                  <input
+                    type="text"
+                    required
+                    value={newYearName}
+                    onChange={(e) => setNewYearName(e.target.value)}
+                    placeholder="2026 - 2027"
+                    className="col-span-3 px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                  />
+                  <input
+                    type="date"
+                    value={newYearStart}
+                    onChange={(e) => setNewYearStart(e.target.value)}
+                    className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                  />
+                  <input
+                    type="date"
+                    value={newYearEnd}
+                    onChange={(e) => setNewYearEnd(e.target.value)}
+                    className="px-2.5 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                  />
+                  <label className="flex items-center gap-1.5 text-[11px] cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={newYearActive}
+                      onChange={(e) => setNewYearActive(e.target.checked)}
+                    />
+                    <span>Kích hoạt</span>
+                  </label>
+                </div>
+                <button
+                  type="submit"
+                  disabled={creatingYear}
+                  className="px-3.5 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white font-semibold"
+                >
+                  {creatingYear ? 'Đang tạo...' : 'Thêm năm học'}
+                </button>
+              </form>
+            </div>
+          </div>
+
+          {/* Subjects Matrix */}
           <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-4">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-white font-display">
@@ -528,16 +898,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       className="p-4 rounded-2xl border border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/40 space-y-2.5"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-bold text-sm text-slate-900 dark:text-white">
-                          {sub.name}
-                        </span>
+                        <span className="font-bold text-sm text-slate-900 dark:text-white">{sub.name}</span>
                         <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-purple-100 dark:bg-purple-950/60 text-purple-700 dark:text-purple-300 font-semibold">
                           {sub.code}
                         </span>
                       </div>
-                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
-                        {sub.description}
-                      </p>
+                      <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">{sub.description}</p>
                       <div className="pt-2 border-t border-slate-200/70 dark:border-slate-700/60 flex items-center justify-between text-[11px] text-slate-500">
                         <span>Khối: Lớp {sub.grades.join(', ')}</span>
                         <span className="font-semibold text-cyan-600 dark:text-cyan-400">
@@ -559,10 +925,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-white font-display">
-                Quản lý Tài khoản & Phân quyền (RBAC)
+                Quản lý Tài khoản, Duyệt Giáo viên & Phân quyền (RBAC)
               </h2>
               <p className="text-xs text-slate-400">
-                Kiểm soát quyền truy cập Học sinh, Giáo viên và Quản trị viên hệ thống.
+                Phê duyệt tài khoản giáo viên mới và kiểm soát vai trò Học sinh, Giáo viên, Quản trị viên.
               </p>
             </div>
             <button
@@ -592,8 +958,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <tr>
                     <th className="px-5 py-3.5">Họ tên & Email</th>
                     <th className="px-5 py-3.5">Trường / Khối</th>
-                    <th className="px-5 py-3.5">Vai trò hiện tại</th>
-                    <th className="px-5 py-3.5 text-right">Phân quyền</th>
+                    <th className="px-5 py-3.5">Vai trò & Duyệt GV</th>
+                    <th className="px-5 py-3.5 text-right">Phân quyền & Thao tác</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -606,12 +972,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       <td className="px-5 py-4">
                         <div>{u.school || '—'}</div>
                         {u.role === 'student' && u.grade && (
-                          <div className="text-[11px] text-cyan-600 dark:text-cyan-400">Lớp {u.grade} · {u.xp || 0} XP</div>
+                          <div className="text-[11px] text-cyan-600 dark:text-cyan-400">
+                            Lớp {u.grade} · {u.xp || 0} XP
+                          </div>
                         )}
                       </td>
-                      <td className="px-5 py-4">
+                      <td className="px-5 py-4 space-y-1">
                         <span
-                          className={`px-2.5 py-1 rounded-md text-[10px] font-semibold uppercase ${
+                          className={`px-2.5 py-1 rounded-md text-[10px] font-semibold uppercase inline-block ${
                             u.role === 'admin'
                               ? 'bg-purple-50 text-purple-700 dark:bg-purple-950/40 border border-purple-200 dark:border-purple-800'
                               : u.role === 'teacher'
@@ -621,19 +989,60 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         >
                           {u.role === 'admin' ? 'Admin' : u.role === 'teacher' ? 'Giáo viên' : 'Học sinh'}
                         </span>
+                        {u.role === 'teacher' && (
+                          <div>
+                            <span
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold inline-block ${
+                                u.teacherApprovalStatus === 'approved'
+                                  ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40'
+                                  : u.teacherApprovalStatus === 'rejected'
+                                  ? 'bg-red-50 text-red-700 dark:bg-red-950/40'
+                                  : 'bg-amber-50 text-amber-700 dark:bg-amber-950/40'
+                              }`}
+                            >
+                              {u.teacherApprovalStatus === 'approved'
+                                ? 'Đã duyệt GV'
+                                : u.teacherApprovalStatus === 'rejected'
+                                ? 'Bị từ chối'
+                                : 'Chờ duyệt GV'}
+                            </span>
+                          </div>
+                        )}
                       </td>
                       <td className="px-5 py-4 text-right">
-                        <select
-                          aria-label={`Đổi vai trò cho ${u.email}`}
-                          value={u.role}
-                          disabled={updatingUserId === u.id}
-                          onChange={(e) => handleRoleChange(u.id, e.target.value as UserRole)}
-                          className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium focus:outline-none focus:border-purple-500"
-                        >
-                          <option value="student">Học sinh</option>
-                          <option value="teacher">Giáo viên</option>
-                          <option value="admin">Admin</option>
-                        </select>
+                        <div className="inline-flex flex-wrap items-center justify-end gap-2">
+                          {u.role === 'teacher' && u.teacherApprovalStatus !== 'approved' && (
+                            <button
+                              onClick={() => handleTeacherApproval(u.id, 'approved')}
+                              disabled={updatingUserId === u.id}
+                              className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-semibold inline-flex items-center gap-1"
+                            >
+                              <UserCheck className="w-3.5 h-3.5" />
+                              <span>Duyệt GV</span>
+                            </button>
+                          )}
+                          {u.role === 'teacher' && u.teacherApprovalStatus !== 'rejected' && (
+                            <button
+                              onClick={() => handleTeacherApproval(u.id, 'rejected')}
+                              disabled={updatingUserId === u.id}
+                              className="px-2.5 py-1 rounded-lg bg-red-50 dark:bg-red-950/40 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800 text-[11px] font-semibold inline-flex items-center gap-1"
+                            >
+                              <UserX className="w-3.5 h-3.5" />
+                              <span>Từ chối</span>
+                            </button>
+                          )}
+                          <select
+                            aria-label={`Đổi vai trò cho ${u.email}`}
+                            value={u.role}
+                            disabled={updatingUserId === u.id}
+                            onChange={(e) => handleRoleChange(u.id, e.target.value as UserRole)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-medium focus:outline-none focus:border-purple-500"
+                          >
+                            <option value="student">Học sinh</option>
+                            <option value="teacher">Giáo viên</option>
+                            <option value="admin">Admin</option>
+                          </select>
+                        </div>
                       </td>
                     </tr>
                   ))}
@@ -647,27 +1056,51 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* Tab 4: Audit Logs */}
       {selectedTab === 'audit' && (
         <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-sm overflow-hidden">
-          <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
+          <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
             <div>
               <h2 className="text-base font-bold text-slate-900 dark:text-white font-display">
                 Nhật ký kiểm toán hoạt động hệ thống (Audit Trail)
               </h2>
-              <span className="text-xs text-slate-400">Lưu vết mọi thao tác xác thực, phân quyền, AI và học liệu</span>
+              <span className="text-xs text-slate-400">
+                Lưu vết mọi thao tác xác thực, phân quyền, AI và học liệu
+              </span>
             </div>
-            {onAuditLogsRefresh && (
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  value={auditSearch}
+                  onChange={(e) => setAuditSearch(e.target.value)}
+                  placeholder="Lọc hành động, email..."
+                  className="pl-8 pr-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs"
+                />
+              </div>
+              <select
+                value={auditStatusFilter}
+                onChange={(e) => setAuditStatusFilter(e.target.value as 'all' | 'success' | 'warning' | 'info')}
+                className="px-3 py-1.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs"
+              >
+                <option value="all">Tất cả mức</option>
+                <option value="success">Success</option>
+                <option value="info">Info</option>
+                <option value="warning">Warning</option>
+              </select>
               <button
-                onClick={onAuditLogsRefresh}
+                onClick={fetchFilteredAuditLogs}
+                disabled={loadingAudit}
                 className="px-3 py-1.5 rounded-xl bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-xs font-semibold flex items-center gap-1.5"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingAudit ? 'animate-spin' : ''}`} />
                 <span>Làm mới</span>
               </button>
-            )}
+            </div>
           </div>
 
-          {auditLogs.length === 0 ? (
+          {filteredAuditLogs.length === 0 ? (
             <div className="p-10 text-center text-xs text-slate-500">
-              Chưa có bản ghi nhật ký kiểm toán nào.
+              Không tìm thấy bản ghi nhật ký kiểm toán phù hợp.
             </div>
           ) : (
             <div className="overflow-x-auto">
@@ -682,20 +1115,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {auditLogs.map((log) => (
+                  {filteredAuditLogs.map((log) => (
                     <tr key={log.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-800/40 transition-colors">
-                      <td className="px-5 py-4 font-semibold text-slate-900 dark:text-white">
-                        {log.action}
-                      </td>
+                      <td className="px-5 py-4 font-semibold text-slate-900 dark:text-white">{log.action}</td>
                       <td className="px-5 py-4">{log.user}</td>
                       <td className="px-5 py-4">
-                        <span className="font-mono text-[11px] text-cyan-600 dark:text-cyan-400">
-                          {log.role}
-                        </span>
+                        <span className="font-mono text-[11px] text-cyan-600 dark:text-cyan-400">{log.role}</span>
                       </td>
-                      <td className="px-5 py-4 max-w-sm text-slate-700 dark:text-slate-300">
-                        {log.details}
-                      </td>
+                      <td className="px-5 py-4 max-w-sm text-slate-700 dark:text-slate-300">{log.details}</td>
                       <td className="px-5 py-4 font-mono text-slate-400">
                         {new Date(log.timestamp).toLocaleString('vi-VN')}
                       </td>
@@ -785,6 +1212,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </div>
                 </label>
 
+                <label className="flex items-start gap-3 p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 cursor-pointer md:col-span-2">
+                  <input
+                    type="checkbox"
+                    checked={settings.leaderboardEnabled}
+                    onChange={(e) => setSettings({ ...settings, leaderboardEnabled: e.target.checked })}
+                    className="mt-0.5 rounded text-purple-600"
+                  />
+                  <div>
+                    <div className="font-semibold text-slate-900 dark:text-white">
+                      Cho phép Bảng xếp hạng học sinh (mặc định tắt để tránh áp lực thi đua)
+                    </div>
+                    <div className="text-slate-500 mt-0.5">
+                      Khi tắt, học sinh chỉ tập trung tiến bộ cá nhân (XP, chuỗi ngày học và huy hiệu cá nhân).
+                    </div>
+                  </div>
+                </label>
+
                 <div className="space-y-1.5">
                   <label className="font-semibold text-slate-700 dark:text-slate-300">
                     Chuẩn chương trình đang áp dụng
@@ -839,22 +1283,149 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <li>Tuân thủ Luật Trẻ em Việt Nam và Nghị định 13/2023/NĐ-CP về bảo vệ dữ liệu cá nhân.</li>
                 <li>Mật khẩu người dùng được băm bằng thuật toán scrypt kèm salt ngẫu nhiên, không lưu dạng thô.</li>
                 <li>Bộ lọc AI nhắc nhở an toàn lứa tuổi và chặn hỏi thông tin cá nhân nhạy cảm của học sinh.</li>
-                <li>Dữ liệu hiện chạy trên bộ nhớ đệm máy chủ (In-Memory); cần tích hợp PostgreSQL/Firestore trước khi vận hành chính thức.</li>
+                <li>
+                  Dữ liệu vận hành theo kiến trúc Hybrid: Cloud Firestore Enterprise kết hợp Express API có RBAC/Security Rules và nút đồng bộ kho học liệu cho Admin.
+                </li>
               </ul>
             </div>
 
             <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-4">
               <div className="flex items-center gap-2 text-sm font-bold text-slate-900 dark:text-white font-display">
                 <Cpu className="w-4 h-4 text-cyan-500" />
-                <span>Kiến trúc RAG & Giới hạn Thẩm định</span>
+                <span>Kiến trúc RAG 10 bước & Giới hạn Thẩm định</span>
               </div>
               <ul className="text-xs text-slate-600 dark:text-slate-300 space-y-2.5 leading-relaxed list-disc list-inside">
-                <li>Gia sư AI EduBot truy xuất ngữ cảnh ưu tiên từ kho bài học có trạng thái đã thẩm định (verified).</li>
+                <li>Gia sư AI EduBot truy xuất ngữ cảnh ưu tiên từ kho bài học có trạng thái đã thẩm định (verified/APPROVED).</li>
                 <li>Nếu không tìm thấy tài liệu phù hợp trong kho kiến thức chuẩn, AI thông báo giới hạn và hướng dẫn hỏi thầy cô.</li>
                 <li>Mọi thao tác phân quyền, thẩm định học liệu và gọi AI đều được ghi vào Nhật ký kiểm toán.</li>
                 <li>Không trả về câu trả lời AI giả mạo khi dịch vụ Gemini gặp lỗi hoặc thiếu API Key.</li>
               </ul>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Create New Lesson */}
+      {showCreateLessonModal && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-white dark:bg-slate-900 w-full max-w-lg rounded-3xl p-6 border border-slate-200 dark:border-slate-800 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-bold text-slate-900 dark:text-white font-display">
+                Thêm Bài Học Mới vào Kho GDPT
+              </h3>
+              <button
+                onClick={() => setShowCreateLessonModal(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateLesson} className="space-y-3 text-xs">
+              <div>
+                <label className="font-semibold text-slate-700 dark:text-slate-300">Tên bài học *</label>
+                <input
+                  type="text"
+                  required
+                  value={newLessonTitle}
+                  onChange={(e) => setNewLessonTitle(e.target.value)}
+                  placeholder="Ví dụ: Phép cộng trong phạm vi 100 000"
+                  className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300">Môn học</label>
+                  <select
+                    value={newLessonSubject}
+                    onChange={(e) => setNewLessonSubject(e.target.value)}
+                    className="mt-1 w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                  >
+                    {subjects.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300">Khối lớp</label>
+                  <select
+                    value={newLessonGrade}
+                    onChange={(e) => setNewLessonGrade(Number(e.target.value))}
+                    className="mt-1 w-full px-3 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                  >
+                    {[1, 2, 3, 4, 5].map((g) => (
+                      <option key={g} value={g}>
+                        Lớp {g}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300">Bộ sách / Nguồn</label>
+                  <input
+                    type="text"
+                    value={newLessonBook}
+                    onChange={(e) => setNewLessonBook(e.target.value)}
+                    className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                  />
+                </div>
+                <div>
+                  <label className="font-semibold text-slate-700 dark:text-slate-300">Văn bản căn cứ</label>
+                  <input
+                    type="text"
+                    value={newLessonDocNum}
+                    onChange={(e) => setNewLessonDocNum(e.target.value)}
+                    className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 dark:text-slate-300">Tóm tắt kiến thức trọng tâm</label>
+                <textarea
+                  rows={3}
+                  value={newLessonSummary}
+                  onChange={(e) => setNewLessonSummary(e.target.value)}
+                  placeholder="Mô tả ngắn gọn nội dung bài học..."
+                  className="mt-1 w-full px-3.5 py-2.5 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                />
+              </div>
+
+              <div>
+                <label className="font-semibold text-slate-700 dark:text-slate-300">Trạng thái ban đầu</label>
+                <select
+                  value={newLessonStatus}
+                  onChange={(e) => setNewLessonStatus(e.target.value as 'DRAFT' | 'NEEDS_REVIEW')}
+                  className="mt-1 w-full px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700"
+                >
+                  <option value="NEEDS_REVIEW">NEEDS_REVIEW (Chờ đối chiếu thẩm định)</option>
+                  <option value="DRAFT">DRAFT (Bản nháp)</option>
+                </select>
+              </div>
+
+              <div className="flex justify-end gap-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateLessonModal(false)}
+                  className="px-4 py-2 rounded-xl text-slate-500 hover:text-slate-800 font-semibold"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  disabled={creatingLesson}
+                  className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-700 disabled:bg-purple-400 text-white font-semibold"
+                >
+                  {creatingLesson ? 'Đang tạo...' : 'Tạo bài học'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

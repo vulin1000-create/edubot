@@ -4,8 +4,8 @@
  */
 
 import React, { useState } from 'react';
-import { Sparkles, FileText, CheckCircle2, Copy, RefreshCw, Check, AlertCircle } from 'lucide-react';
-import { AiDraftItem } from '../../types/index.ts';
+import { Sparkles, FileText, CheckCircle2, Copy, RefreshCw, Check, AlertCircle, Download, BookOpen } from 'lucide-react';
+import { AiDraftItem, RagCitation } from '../../types/index.ts';
 
 interface AiLessonPlannerProps {
   authToken?: string | null;
@@ -23,6 +23,7 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ authToken, onD
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [generatedResult, setGeneratedResult] = useState<string | null>(null);
+  const [citations, setCitations] = useState<RagCitation[]>([]);
   const [copied, setCopied] = useState(false);
   const [savedSuccess, setSavedSuccess] = useState(false);
 
@@ -52,6 +53,7 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ authToken, onD
       const data = await res.json();
       if (res.ok && data.success && data.draft) {
         setGeneratedResult(data.draft.content.text);
+        setCitations(data.draft.citations || []);
         onDraftCreated(data.draft);
         setSavedSuccess(true);
       } else {
@@ -69,6 +71,19 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ authToken, onD
     navigator.clipboard.writeText(generatedResult);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleDownload = () => {
+    if (!generatedResult) return;
+    const blob = new Blob([generatedResult], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `KHBD-Lop${grade}-${subject}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -217,13 +232,22 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ authToken, onD
               </div>
 
               {generatedResult && (
-                <button
-                  onClick={handleCopy}
-                  className="p-1.5 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-1"
-                >
-                  {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
-                  <span>{copied ? 'Đã sao chép' : 'Sao chép'}</span>
-                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    onClick={handleCopy}
+                    className="p-1.5 text-xs text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg transition-colors flex items-center gap-1"
+                  >
+                    {copied ? <Check className="w-3.5 h-3.5 text-emerald-500" /> : <Copy className="w-3.5 h-3.5" />}
+                    <span>{copied ? 'Đã sao chép' : 'Sao chép'}</span>
+                  </button>
+                  <button
+                    onClick={handleDownload}
+                    className="p-1.5 text-xs text-emerald-700 dark:text-emerald-300 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 rounded-lg transition-colors flex items-center gap-1 font-semibold"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    <span>Tải .md</span>
+                  </button>
+                </div>
               )}
             </div>
 
@@ -231,8 +255,22 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ authToken, onD
               <div className="mt-3 p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/40 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0" />
                 <span>
-                  Đã tự động lưu vào <strong>Hàng đợi duyệt bản nháp</strong> (Trạng thái: Bản nháp chờ thầy cô phê duyệt).
+                  Đã tự động lưu vào <strong>Hàng đợi duyệt bản nháp</strong> (Trạng thái: Bản nháp AI chờ thầy cô phê duyệt).
                 </span>
+              </div>
+            )}
+
+            {citations.length > 0 && (
+              <div className="mt-3 p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 space-y-1 text-[11px]">
+                <div className="font-semibold text-cyan-600 dark:text-cyan-400 flex items-center gap-1">
+                  <BookOpen className="w-3.5 h-3.5" />
+                  <span>Nguồn RAG đã trích dẫn ({citations.length}):</span>
+                </div>
+                {citations.map((c) => (
+                  <div key={c.chunkId} className="text-slate-600 dark:text-slate-300">
+                    • <strong>{c.title}</strong> ({c.sourceRef})
+                  </div>
+                ))}
               </div>
             )}
 
@@ -242,7 +280,7 @@ export const AiLessonPlanner: React.FC<AiLessonPlannerProps> = ({ authToken, onD
               ) : (
                 <div className="text-slate-400 py-12 text-center font-sans space-y-2">
                   <FileText className="w-8 h-8 mx-auto text-slate-300" />
-                  <div>Chưa có giáo án nào được tạo. Hãy điền thông tin và bấm "Tạo bản nháp Giáo án AI".</div>
+                  <div>Chưa có giáo án nào được tạo. Hãy điền thông tin và bấm &ldquo;Tạo bản nháp Giáo án AI&rdquo;.</div>
                 </div>
               )}
             </div>

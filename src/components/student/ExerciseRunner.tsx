@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ExerciseSet, Question, StudentSubmission } from '../../types/index.ts';
+import { persistSubmissionToFirestore } from '../../lib/firestoreService.ts';
 import { EduBotMascot } from '../EduBotMascot.tsx';
 import {
   ArrowLeft,
@@ -15,12 +16,14 @@ import {
   Sparkles,
   ChevronRight,
   RotateCcw,
-  AlertCircle
+  AlertCircle,
+  Lock
 } from 'lucide-react';
 
 interface ExerciseRunnerProps {
   exercise: ExerciseSet;
   assignmentId?: string;
+  existingGradedSubmission?: StudentSubmission | null;
   studentId: string;
   studentName: string;
   grade: number;
@@ -47,6 +50,9 @@ function evaluateQuestionCorrectness(q: Question, studentAns: any): boolean {
     const cleanStudent = String(studentAns || '').trim().toLowerCase().replace(/\s+/g, '');
     const cleanCorrect = String(q.correctAnswer || '').trim().toLowerCase().replace(/\s+/g, '');
     return cleanStudent.length > 0 && cleanStudent === cleanCorrect;
+  }
+  if (q.type === 'essay') {
+    return String(studentAns || '').trim().length >= 5;
   }
   if (q.type === 'matching') {
     if (typeof studentAns !== 'object' || studentAns === null) return false;
@@ -78,6 +84,7 @@ function formatStudentAnswer(q: Question, studentAns: any): string {
 export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
   exercise,
   assignmentId,
+  existingGradedSubmission,
   studentId,
   studentName,
   grade,
@@ -108,12 +115,33 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
 
   // Timer tick
   useEffect(() => {
-    if (submissionResult) return;
+    if (submissionResult || existingGradedSubmission) return;
     const interval = setInterval(() => {
       setSecondsSpent((s) => s + 1);
     }, 1000);
     return () => clearInterval(interval);
-  }, [submissionResult]);
+  }, [submissionResult, existingGradedSubmission]);
+
+  if (existingGradedSubmission && !submissionResult) {
+    return (
+      <div className="max-w-3xl mx-auto bg-white dark:bg-slate-900 p-8 rounded-3xl border border-slate-200 dark:border-slate-800 text-center space-y-4">
+        <Lock className="w-8 h-8 text-emerald-500 mx-auto" />
+        <h2 className="text-lg font-bold text-slate-900 dark:text-white font-display">
+          Bài tập đã được chấm điểm và khóa sổ
+        </h2>
+        <p className="text-xs text-slate-600 dark:text-slate-300">
+          Điểm chính thức: <strong className="text-emerald-600">{existingGradedSubmission.score}/10</strong>
+          {existingGradedSubmission.teacherFeedback ? ` — Nhận xét GV: "${existingGradedSubmission.teacherFeedback}"` : ''}
+        </p>
+        <button
+          onClick={onBack}
+          className="px-4 py-2 text-xs font-semibold text-white bg-slate-900 dark:bg-white dark:text-slate-900 rounded-xl"
+        >
+          Quay lại
+        </button>
+      </div>
+    );
+  }
 
   if (!exercise.questions || exercise.questions.length === 0) {
     return (
@@ -183,6 +211,7 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
           submission: data.submission,
           xpEarned: data.xpEarned,
         });
+        persistSubmissionToFirestore(data.submission).catch(() => {});
         onSubmittedSuccess(data.submission, data.xpEarned);
       } else {
         setSubmitError(data.error || 'Không thể nộp bài lúc này. Vui lòng thử lại.');
@@ -494,6 +523,22 @@ export const ExerciseRunner: React.FC<ExerciseRunnerProps> = ({
                   className="w-full p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500 font-mono"
                 />
               </div>
+            </div>
+          )}
+
+          {/* 3b. Essay / Tự luận */}
+          {currentQ.type === 'essay' && (
+            <div className="space-y-2">
+              <label className="text-xs font-semibold text-slate-600 dark:text-slate-400">
+                Viết câu trả lời tự luận của em (thầy/cô sẽ chấm và nhận xét):
+              </label>
+              <textarea
+                rows={5}
+                placeholder="Trình bày suy nghĩ hoặc bài làm của em rõ ràng..."
+                value={answers[currentQ.id] || ''}
+                onChange={(e) => handleSetAnswer(currentQ.id, e.target.value)}
+                className="w-full p-3.5 rounded-xl border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 text-sm text-slate-900 dark:text-white focus:outline-none focus:border-cyan-500 leading-relaxed"
+              />
             </div>
           )}
 

@@ -4,7 +4,8 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { AiChatMessage, Lesson } from '../../types/index.ts';
+import { AiChatMessage, Lesson, isLessonVerified } from '../../types/index.ts';
+import { persistChatMessageToFirestore } from '../../lib/firestoreService.ts';
 import { EduBotMascot } from '../EduBotMascot.tsx';
 import { Send, Bot, BookOpen, ShieldCheck, RefreshCw, AlertCircle, Trash2 } from 'lucide-react';
 
@@ -149,12 +150,15 @@ export const EduBotTutorChat: React.FC<EduBotTutorChatProps> = ({
         text: data.text,
         timestamp: new Date().toLocaleTimeString('vi-VN', { hour: '2-digit', minute: '2-digit' }),
         referencedLessons: data.referencedLessons,
+        citations: data.citations,
         suggestedPrompts: data.suggestedPrompts,
         robotExpression: data.robotExpression || 'explaining',
       };
 
       setMessages((prev) => [...prev, botReply]);
       setCurrentExpression(data.robotExpression || 'happy');
+      persistChatMessageToFirestore(userMsg).catch(() => {});
+      persistChatMessageToFirestore(botReply).catch(() => {});
     } catch {
       setErrorBanner('Lỗi kết nối máy chủ AI EduBot. Vui lòng thử lại sau ít giây.');
       setCurrentExpression('happy');
@@ -163,7 +167,9 @@ export const EduBotTutorChat: React.FC<EduBotTutorChatProps> = ({
     }
   };
 
-  const matchedCount = lessons.filter((l) => l.grade === grade && l.subjectId === selectedSubject && l.status === 'verified').length;
+  const matchedCount = lessons.filter(
+    (l) => l.grade === grade && l.subjectId === selectedSubject && isLessonVerified(l.status)
+  ).length;
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-16">
@@ -252,8 +258,22 @@ export const EduBotTutorChat: React.FC<EduBotTutorChatProps> = ({
 
                   {m.referencedLessons && m.referencedLessons.length > 0 && (
                     <div className="mt-2.5 pt-2 border-t border-slate-200 dark:border-slate-700/60 flex items-center gap-1.5 text-[11px] text-cyan-600 dark:text-cyan-400 font-medium">
-                      <BookOpen className="w-3.5 h-3.5" />
+                      <BookOpen className="w-3.5 h-3.5 shrink-0" />
                       <span>Căn cứ bài học: {m.referencedLessons.join(', ')}</span>
+                    </div>
+                  )}
+
+                  {m.citations && m.citations.length > 0 && (
+                    <div className="mt-2 space-y-1">
+                      {m.citations.map((c) => (
+                        <div
+                          key={c.chunkId}
+                          className="text-[11px] px-2.5 py-1.5 rounded-lg bg-white/80 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300"
+                        >
+                          <span className="font-semibold text-cyan-700 dark:text-cyan-300">{c.title}</span>{' '}
+                          <span className="text-slate-400">({c.sourceRef})</span>
+                        </div>
+                      ))}
                     </div>
                   )}
 

@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { onAuthStateChanged } from 'firebase/auth';
 import {
   User,
   UserRole,
@@ -17,7 +18,10 @@ import {
   AuditLog,
   ResourceStatus,
   KnowledgeNode,
+  LearningProgress,
+  isLessonVerified,
 } from './types/index.ts';
+import { auth, testFirestoreConnection, signOutFirebase } from './lib/firebase.ts';
 import { Navbar } from './components/Navbar.tsx';
 import { LandingPage } from './components/LandingPage.tsx';
 import { StudentDashboard } from './components/student/StudentDashboard.tsx';
@@ -34,6 +38,7 @@ import { AssignmentManager } from './components/teacher/AssignmentManager.tsx';
 import { ContentReviewer } from './components/teacher/ContentReviewer.tsx';
 import { AdminDashboard } from './components/admin/AdminDashboard.tsx';
 import { AuthModal } from './components/auth/AuthModal.tsx';
+import { PrivacyCenterModal } from './components/privacy/PrivacyCenterModal.tsx';
 import {
   ArrowRight,
   PlayCircle,
@@ -42,10 +47,38 @@ import {
   Search,
   LogIn,
   BookOpen,
-  AlertCircle
+  AlertCircle,
+  ShieldCheck,
 } from 'lucide-react';
 
 const TOKEN_STORAGE_KEY = 'edubot_token';
+const TOKEN_SOURCE_KEY = 'edubot_auth_source';
+
+const TAB_TO_PATH: Record<string, string> = {
+  landing: '/',
+  dashboard: '/dashboard',
+  lessons: '/lessons',
+  exercises: '/exercises',
+  tutor: '/tutor',
+  journey: '/journey',
+  'knowledge-map': '/knowledge-map',
+  'teacher-overview': '/teacher',
+  'ai-planner': '/teacher/planner',
+  'ai-standardize': '/teacher/standardizer',
+  'ai-quiz': '/teacher/quiz',
+  'assignment-manager': '/teacher/assignments',
+  'review-drafts': '/teacher/review',
+  'admin-overview': '/admin',
+  'curriculum-manager': '/admin/curriculum',
+  'learning-resources': '/admin/resources',
+  'audit-logs': '/admin/audit',
+};
+
+function pathToTab(pathname: string): string {
+  const clean = pathname.replace(/\/+$/, '') || '/';
+  const found = Object.entries(TAB_TO_PATH).find(([, p]) => p === clean);
+  return found ? found[0] : 'landing';
+}
 
 export default function App() {
   const [darkMode, setDarkMode] = useState(false);
@@ -60,24 +93,37 @@ export default function App() {
   const [isRestoringSession, setIsRestoringSession] = useState<boolean>(Boolean(authToken));
 
   const [selectedGrade, setSelectedGrade] = useState<number>(4);
-  const [activeTab, setActiveTab] = useState<string>('landing');
+  const [activeTab, setActiveTab] = useState<string>(() => {
+    if (typeof window !== 'undefined') {
+      return pathToTab(window.location.pathname);
+    }
+    return 'landing';
+  });
   const [selectedSubjectFilter, setSelectedSubjectFilter] = useState<string>('all');
   const [lessonSearch, setLessonSearch] = useState<string>('');
 
-  // Backend state
+  // Backend & Firestore state
   const [subjects, setSubjects] = useState<CurriculumSubject[]>([]);
   const [lessons, setLessons] = useState<Lesson[]>([]);
   const [exercises, setExercises] = useState<ExerciseSet[]>([]);
   const [classes, setClasses] = useState<ClassRoom[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
   const [submissions, setSubmissions] = useState<StudentSubmission[]>([]);
+  const [learningProgress, setLearningProgress] = useState<LearningProgress[]>([]);
   const [drafts, setDrafts] = useState<AiDraftItem[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [knowledgeNodes, setKnowledgeNodes] = useState<KnowledgeNode[]>([]);
+  const [systemPolicy, setSystemPolicy] = useState<{
+    childSafetyFilterEnabled: boolean;
+    parentalConsentRequired: boolean;
+    leaderboardEnabled: boolean;
+    curriculumStandard: string;
+  } | null>(null);
 
   const [showAuthModal, setShowAuthModal] = useState<boolean>(false);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [suggestedRole, setSuggestedRole] = useState<UserRole | undefined>(undefined);
+  const [showPrivacyModal, setShowPrivacyModal] = useState<boolean>(false);
   const [appBannerError, setAppBannerError] = useState<string>('');
 
   // Navigation targets
@@ -85,6 +131,29 @@ export default function App() {
   const [activeExerciseSetId, setActiveExerciseSetId] = useState<string | null>(null);
   const [activeAssignmentId, setActiveAssignmentId] = useState<string | undefined>(undefined);
   const [tutorInitialLesson, setTutorInitialLesson] = useState<{ id?: string; title?: string }>({});
+
+  const navigateTab = useCallback((tab: string, updateHistory = true) => {
+    setActiveTab(tab);
+    if (updateHistory && typeof window !== 'undefined') {
+      const targetPath = TAB_TO_PATH[tab];
+      if (targetPath && window.location.pathname !== targetPath) {
+        try {
+          window.history.pushState({ tab }, '', targetPath);
+        } catch {
+          // ignore history errors in sandboxed iframes
+        }
+      }
+    }
+  }, []);
+
+  // Listen to browser back/forward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveTab(pathToTab(window.location.pathname));
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Sync dark mode class with root html
   useEffect(() => {
@@ -94,6 +163,40 @@ export default function App() {
       document.documentElement.classList.remove('dark');
     }
   }, [darkMode]);
+
+  // Verify Firestore connection & load public school policy on startup
+  useEffect(() => {
+    testFirestoreConnection().catch(() => {});
+    fetch('/api/system/public-policy')
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data) setSystemPolicy(data);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Keep Firebase ID Token fresh if signed in via Firebase Auth
+  useEffect(() => {
+    if (!auth) return;
+    const unsub = onAuthStateChanged(auth, async (firebaseUser) => {
+      let source = 'local';
+      try {
+        source = localStorage.getItem(TOKEN_SOURCE_KEY) || 'local';
+      } catch {
+        source = 'local';
+      }
+      if (firebaseUser && source === 'firebase') {
+        try {
+          const freshToken = await firebaseUser.getIdToken();
+          localStorage.setItem(TOKEN_STORAGE_KEY, freshToken);
+          setAuthToken(freshToken);
+        } catch {
+          // ignore refresh errors
+        }
+      }
+    });
+    return () => unsub();
+  }, []);
 
   // Restore session from stored token on mount
   useEffect(() => {
@@ -116,24 +219,29 @@ export default function App() {
           if (data.user.grade) {
             setSelectedGrade(data.user.grade);
           }
-          setActiveTab(
-            data.user.role === 'student'
-              ? 'dashboard'
-              : data.user.role === 'teacher'
-              ? 'teacher-overview'
-              : 'admin-overview'
-          );
+          const currentPathTab = pathToTab(window.location.pathname);
+          if (currentPathTab === 'landing') {
+            navigateTab(
+              data.user.role === 'student'
+                ? 'dashboard'
+                : data.user.role === 'teacher'
+                ? 'teacher-overview'
+                : 'admin-overview',
+              false
+            );
+          }
         }
       } catch {
         if (!cancelled) {
           try {
             localStorage.removeItem(TOKEN_STORAGE_KEY);
+            localStorage.removeItem(TOKEN_SOURCE_KEY);
           } catch {
             // ignore storage errors
           }
           setAuthToken(null);
           setCurrentUser(null);
-          setActiveTab('landing');
+          navigateTab('landing', false);
         }
       } finally {
         if (!cancelled) {
@@ -178,6 +286,7 @@ export default function App() {
       setClasses([]);
       setAssignments([]);
       setSubmissions([]);
+      setLearningProgress([]);
       setDrafts([]);
       setAuditLogs([]);
       return;
@@ -188,34 +297,34 @@ export default function App() {
     const assignQuery = isStaff ? '' : `?grade=${selectedGrade}`;
 
     try {
-      const requests: Promise<Response>[] = [
-        fetch('/api/classes', { headers }),
-        fetch(`/api/assignments${assignQuery}`, { headers }),
-        fetch('/api/submissions', { headers }),
-      ];
+      const classesP = fetch('/api/classes', { headers });
+      const assignmentsP = fetch(`/api/assignments${assignQuery}`, { headers });
+      const submissionsP = fetch('/api/submissions', { headers });
+      const progressP =
+        currentUser.role === 'student'
+          ? fetch('/api/learning-progress', { headers })
+          : Promise.resolve(null);
+      const draftsP = isStaff ? fetch('/api/ai/drafts', { headers }) : Promise.resolve(null);
+      const auditP =
+        currentUser.role === 'admin' ? fetch('/api/audit-logs', { headers }) : Promise.resolve(null);
 
-      if (isStaff) {
-        requests.push(fetch('/api/ai/drafts', { headers }));
-      }
-      if (currentUser.role === 'admin') {
-        requests.push(fetch('/api/audit-logs', { headers }));
-      }
+      const [classesRes, assignRes, subRes, progRes, draftsRes, auditRes] = await Promise.all([
+        classesP,
+        assignmentsP,
+        submissionsP,
+        progressP,
+        draftsP,
+        auditP,
+      ]);
 
-      const responses = await Promise.all(requests);
-      if (responses[0].ok) setClasses(await responses[0].json());
-      if (responses[1].ok) setAssignments(await responses[1].json());
-      if (responses[2].ok) setSubmissions(await responses[2].json());
-      if (isStaff && responses[3]?.ok) {
-        setDrafts(await responses[3].json());
-      } else {
-        setDrafts([]);
-      }
-      if (currentUser.role === 'admin') {
-        const auditRes = responses[4];
-        if (auditRes?.ok) setAuditLogs(await auditRes.json());
-      } else {
-        setAuditLogs([]);
-      }
+      if (classesRes.ok) setClasses(await classesRes.json());
+      if (assignRes.ok) setAssignments(await assignRes.json());
+      if (subRes.ok) setSubmissions(await subRes.json());
+      if (progRes && progRes.ok) setLearningProgress(await progRes.json());
+      if (draftsRes && draftsRes.ok) setDrafts(await draftsRes.json());
+      else setDrafts([]);
+      if (auditRes && auditRes.ok) setAuditLogs(await auditRes.json());
+      else setAuditLogs([]);
     } catch (err) {
       console.error('Failed to fetch authenticated data:', err);
     }
@@ -231,9 +340,10 @@ export default function App() {
     setShowAuthModal(true);
   };
 
-  const handleAuthSuccess = (user: User, token: string) => {
+  const handleAuthSuccess = (user: User, token: string, source: 'local' | 'firebase' = 'local') => {
     try {
       localStorage.setItem(TOKEN_STORAGE_KEY, token);
+      localStorage.setItem(TOKEN_SOURCE_KEY, source);
     } catch {
       // ignore storage failure
     }
@@ -243,9 +353,9 @@ export default function App() {
     if (user.grade) {
       setSelectedGrade(user.grade);
     }
-    if (user.role === 'student') setActiveTab('dashboard');
-    else if (user.role === 'teacher') setActiveTab('teacher-overview');
-    else setActiveTab('admin-overview');
+    if (user.role === 'student') navigateTab('dashboard');
+    else if (user.role === 'teacher') navigateTab('teacher-overview');
+    else navigateTab('admin-overview');
   };
 
   const handleLogout = async () => {
@@ -260,7 +370,9 @@ export default function App() {
       }
     }
     try {
+      await signOutFirebase();
       localStorage.removeItem(TOKEN_STORAGE_KEY);
+      localStorage.removeItem(TOKEN_SOURCE_KEY);
     } catch {
       // ignore
     }
@@ -269,9 +381,10 @@ export default function App() {
     setClasses([]);
     setAssignments([]);
     setSubmissions([]);
+    setLearningProgress([]);
     setDrafts([]);
     setAuditLogs([]);
-    setActiveTab('landing');
+    navigateTab('landing');
   };
 
   const handleLandingEnterRole = (role: UserRole, grade?: number) => {
@@ -279,7 +392,7 @@ export default function App() {
       if (role === 'student' && grade) {
         setSelectedGrade(grade);
       }
-      setActiveTab(
+      navigateTab(
         role === 'student' ? 'dashboard' : role === 'teacher' ? 'teacher-overview' : 'admin-overview'
       );
       return;
@@ -307,7 +420,7 @@ export default function App() {
       handleOpenAuth('login', 'student');
       return;
     }
-    setActiveTab('tutor');
+    navigateTab('tutor');
   };
 
   const handleCreateClass = async (name: string, grade: number) => {
@@ -369,7 +482,8 @@ export default function App() {
   const handleDraftStatusChange = async (
     draftId: string,
     status: 'approved' | 'rejected' | 'published',
-    notes?: string
+    notes?: string,
+    editedContent?: any
   ) => {
     if (!authToken) return;
     setAppBannerError('');
@@ -380,7 +494,7 @@ export default function App() {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${authToken}`,
         },
-        body: JSON.stringify({ status, teacherNotes: notes }),
+        body: JSON.stringify({ status, teacherNotes: notes, editedContent }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -411,6 +525,12 @@ export default function App() {
 
   const activeLesson = lessons.find((l) => l.id === activeLessonId) || lessons[0];
   const activeExercise = exercises.find((e) => e.id === activeExerciseSetId) || exercises[0];
+  const activeGradedSubmission =
+    activeAssignmentId && currentUser
+      ? submissions.find(
+          (s) => s.assignmentId === activeAssignmentId && s.studentId === currentUser.id && s.status === 'graded'
+        ) || null
+      : null;
 
   const filteredLessons = lessons.filter((les) => {
     const matchSubject = selectedSubjectFilter === 'all' || les.subjectId === selectedSubjectFilter;
@@ -434,7 +554,7 @@ export default function App() {
         currentUser={currentUser}
         activeTab={activeTab}
         onTabChange={(tab) => {
-          setActiveTab(tab);
+          navigateTab(tab);
           if (tab === 'lessons') setActiveLessonId(null);
           if (tab === 'exercises') setActiveExerciseSetId(null);
         }}
@@ -476,7 +596,7 @@ export default function App() {
             onOpenAuth={handleOpenAuth}
             onExploreCurriculum={() => {
               setSelectedSubjectFilter('all');
-              setActiveTab('lessons');
+              navigateTab('lessons');
             }}
           />
         )}
@@ -491,15 +611,17 @@ export default function App() {
                 assignments={assignments}
                 lessons={lessons}
                 submissions={submissions}
+                learningProgress={learningProgress}
                 onSelectSubject={(subId) => {
                   setSelectedSubjectFilter(subId);
-                  setActiveTab('lessons');
+                  navigateTab('lessons');
                 }}
                 onOpenLesson={handleOpenLesson}
                 onOpenExercise={handleOpenExercise}
-                onOpenTutor={() => setActiveTab('tutor')}
-                onOpenJourney={() => setActiveTab('journey')}
-                onOpenKnowledgeMap={() => setActiveTab('knowledge-map')}
+                onOpenTutor={() => navigateTab('tutor')}
+                onOpenJourney={() => navigateTab('journey')}
+                onOpenKnowledgeMap={() => navigateTab('knowledge-map')}
+                onOpenPrivacy={() => setShowPrivacyModal(true)}
               />
             )}
 
@@ -527,7 +649,7 @@ export default function App() {
                   </div>
                 </div>
 
-                {/* Subject Filter Pills */}
+                {/* Subject Filter Buttons */}
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     onClick={() => setSelectedSubjectFilter('all')}
@@ -566,52 +688,50 @@ export default function App() {
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                    {filteredLessons.map((les) => (
-                      <div
-                        key={les.id}
-                        onClick={() => handleOpenLesson(les.id)}
-                        className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 hover:border-cyan-400 dark:hover:border-cyan-600 transition-all cursor-pointer shadow-sm group flex flex-col justify-between"
-                      >
-                        <div className="space-y-3">
-                          <div className="flex items-center justify-between text-xs">
-                            <span className="font-mono text-cyan-600 dark:text-cyan-400 font-semibold">
-                              {les.lessonCode}
-                            </span>
-                            <span
-                              className={`text-[11px] font-semibold flex items-center gap-1 ${
-                                les.status === 'verified'
-                                  ? 'text-emerald-600 dark:text-emerald-400'
-                                  : les.status === 'pending'
-                                  ? 'text-amber-600 dark:text-amber-400'
-                                  : 'text-slate-500'
-                              }`}
-                            >
-                              <FileCheck2 className="w-3.5 h-3.5" />
-                              <span>
-                                {les.status === 'verified'
-                                  ? 'Đã thẩm định'
-                                  : les.status === 'pending'
-                                  ? 'Chờ duyệt'
-                                  : 'Chưa xác minh'}
+                    {filteredLessons.map((les) => {
+                      const verified = isLessonVerified(les.status);
+                      const pending = les.status === 'pending' || les.status === 'NEEDS_REVIEW';
+                      return (
+                        <div
+                          key={les.id}
+                          onClick={() => handleOpenLesson(les.id)}
+                          className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 hover:border-cyan-400 dark:hover:border-cyan-600 transition-all cursor-pointer shadow-sm group flex flex-col justify-between"
+                        >
+                          <div className="space-y-3">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="font-mono text-cyan-600 dark:text-cyan-400 font-semibold">
+                                {les.lessonCode}
                               </span>
-                            </span>
+                              <span
+                                className={`text-[11px] font-semibold flex items-center gap-1 ${
+                                  verified
+                                    ? 'text-emerald-600 dark:text-emerald-400'
+                                    : pending
+                                    ? 'text-amber-600 dark:text-amber-400'
+                                    : 'text-slate-500'
+                                }`}
+                              >
+                                <FileCheck2 className="w-3.5 h-3.5" />
+                                <span>
+                                  {verified ? 'Đã thẩm định' : pending ? 'Chờ duyệt' : 'Chưa xác minh'}
+                                </span>
+                              </span>
+                            </div>
+
+                            <h3 className="text-base font-bold text-slate-900 dark:text-white group-hover:text-cyan-600 dark:group-hover:text-cyan-400 transition-colors">
+                              {les.title}
+                            </h3>
+
+                            <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2">{les.summary}</p>
                           </div>
 
-                          <h3 className="text-base font-bold text-slate-900 dark:text-white group-hover:text-cyan-600 dark:group-hover:text-cyan-400 transition-colors">
-                            {les.title}
-                          </h3>
-
-                          <p className="text-xs text-slate-500 dark:text-slate-400 line-clamp-2">
-                            {les.summary}
-                          </p>
+                          <div className="pt-4 mt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs font-semibold text-cyan-600 dark:text-cyan-400">
+                            <span>Học bài ngay</span>
+                            <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
+                          </div>
                         </div>
-
-                        <div className="pt-4 mt-2 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between text-xs font-semibold text-cyan-600 dark:text-cyan-400">
-                          <span>Học bài ngay</span>
-                          <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
-                        </div>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
               </div>
@@ -621,16 +741,43 @@ export default function App() {
               <LessonViewer
                 lesson={activeLesson}
                 hasMatchingExercise={Boolean(exercises.find((e) => e.lessonId === activeLesson.id))}
-                onBack={() => setActiveTab('lessons')}
+                isCompleted={learningProgress.some((p) => p.lessonId === activeLesson.id && p.completed)}
+                authToken={authToken}
+                onBack={() => navigateTab('lessons')}
                 onOpenExercise={(lId) => {
                   const matched = exercises.find((e) => e.lessonId === lId);
                   if (matched) {
                     handleOpenExercise(matched.id);
                   } else {
-                    setActiveTab('exercises');
+                    navigateTab('exercises');
                   }
                 }}
                 onAskAi={handleAskAiAboutLesson}
+                onProgressUpdated={(lessonId, xpEarned) => {
+                  if (xpEarned > 0) {
+                    setCurrentUser((u) => (u ? { ...u, xp: (u.xp || 0) + xpEarned } : u));
+                  }
+                  setLearningProgress((prev) => {
+                    const exists = prev.find((p) => p.lessonId === lessonId);
+                    if (exists) {
+                      return prev.map((p) => (p.lessonId === lessonId ? { ...p, completed: true } : p));
+                    }
+                    return [
+                      ...prev,
+                      {
+                        id: `lp-${Date.now()}`,
+                        studentId: currentUser?.id || 'guest',
+                        lessonId,
+                        grade: activeLesson.grade,
+                        subjectId: activeLesson.subjectId,
+                        completed: true,
+                        checkpointPassed: true,
+                        timeSpentSeconds: 180,
+                        completedAt: new Date().toISOString(),
+                      },
+                    ];
+                  });
+                }}
               />
             )}
 
@@ -647,7 +794,9 @@ export default function App() {
 
                 {!currentUser && (
                   <div className="p-4 rounded-2xl bg-cyan-50 dark:bg-cyan-950/30 border border-cyan-200 dark:border-cyan-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-cyan-900 dark:text-cyan-200">
-                    <span>Bạn có thể xem thử và làm bài, nhưng cần đăng nhập tài khoản Học sinh để nộp bài và lưu điểm XP.</span>
+                    <span>
+                      Bạn có thể xem thử và làm bài, nhưng cần đăng nhập tài khoản Học sinh để nộp bài và lưu điểm XP.
+                    </span>
                     <button
                       onClick={() => handleOpenAuth('login', 'student')}
                       className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-700 text-white font-semibold flex items-center gap-1.5 self-start sm:self-auto shrink-0"
@@ -686,9 +835,7 @@ export default function App() {
                             <span aria-hidden="true">·</span>
                             <span>{ex.questions.length} câu hỏi</span>
                           </div>
-                          <h3 className="text-base font-bold text-slate-900 dark:text-white">
-                            {ex.title}
-                          </h3>
+                          <h3 className="text-base font-bold text-slate-900 dark:text-white">{ex.title}</h3>
                         </div>
 
                         <button
@@ -709,12 +856,13 @@ export default function App() {
               <ExerciseRunner
                 exercise={activeExercise}
                 assignmentId={activeAssignmentId}
+                existingGradedSubmission={activeGradedSubmission}
                 studentId={currentUser?.id || 'guest'}
                 studentName={currentUser?.name || 'Khách'}
                 grade={selectedGrade}
                 authToken={authToken}
                 onRequireAuth={() => handleOpenAuth('login', 'student')}
-                onBack={() => setActiveTab('exercises')}
+                onBack={() => navigateTab('exercises')}
                 onSubmittedSuccess={(sub, xp) => {
                   setSubmissions((prev) => [sub, ...prev]);
                   setCurrentUser((u) => (u ? { ...u, xp: (u.xp || 0) + xp } : u));
@@ -736,7 +884,10 @@ export default function App() {
             {activeTab === 'journey' && currentUser && (
               <GamificationJourney
                 user={currentUser}
-                onStartQuest={(_qId) => setActiveTab('exercises')}
+                lessons={lessons}
+                learningProgress={learningProgress}
+                systemPolicy={systemPolicy}
+                onStartQuest={(_qId) => navigateTab('exercises')}
               />
             )}
 
@@ -781,10 +932,13 @@ export default function App() {
                 submissions={submissions}
                 drafts={drafts}
                 authToken={authToken}
-                onNavigate={(t) => setActiveTab(t)}
+                onNavigate={(t) => navigateTab(t)}
                 onCreateClass={handleCreateClass}
                 onClassUpdated={(updatedClass) =>
                   setClasses((prev) => prev.map((c) => (c.id === updatedClass.id ? updatedClass : c)))
+                }
+                onSubmissionGraded={(updatedSub) =>
+                  setSubmissions((prev) => prev.map((s) => (s.id === updatedSub.id ? updatedSub : s)))
                 }
               />
             )}
@@ -819,6 +973,7 @@ export default function App() {
                 currentUserName={currentUser.name}
                 authToken={authToken}
                 onAssignCreated={(newAssign) => setAssignments((prev) => [newAssign, ...prev])}
+                onExerciseCreated={(newEx) => setExercises((prev) => [newEx, ...prev])}
               />
             )}
 
@@ -836,10 +991,12 @@ export default function App() {
           <AdminDashboard
             lessons={lessons}
             subjects={subjects}
+            exercises={exercises}
             auditLogs={auditLogs}
             activeNavbarTab={activeTab}
             authToken={authToken}
             onUpdateLessonStatus={handleUpdateLessonStatus}
+            onLessonCreated={(newLesson) => setLessons((prev) => [newLesson, ...prev])}
             onAuditLogsRefresh={refreshAuditLogs}
           />
         )}
@@ -853,10 +1010,16 @@ export default function App() {
             <span>– Future Learning Ecosystem (Lớp 1–5)</span>
           </div>
 
-          <div className="flex items-center gap-4 text-[11px]">
+          <div className="flex flex-wrap items-center gap-4 text-[11px]">
             <span>Căn cứ TT 32/2018 & TT 17/2025/TT-BGDĐT</span>
             <span aria-hidden="true">·</span>
-            <span>Bảo vệ quyền riêng tư học sinh</span>
+            <button
+              onClick={() => setShowPrivacyModal(true)}
+              className="inline-flex items-center gap-1 text-cyan-600 dark:text-cyan-400 hover:underline font-medium"
+            >
+              <ShieldCheck className="w-3.5 h-3.5" />
+              <span>Bảo vệ quyền riêng tư học sinh (NĐ 13/2023)</span>
+            </button>
             <span aria-hidden="true">·</span>
             <span>Năm học 2025 – 2026</span>
           </div>
@@ -870,6 +1033,18 @@ export default function App() {
         onAuthSuccess={handleAuthSuccess}
         initialMode={authMode}
         suggestedRole={suggestedRole}
+      />
+
+      {/* Child Privacy & Parental Consent Center Modal */}
+      <PrivacyCenterModal
+        isOpen={showPrivacyModal}
+        onClose={() => setShowPrivacyModal(false)}
+        user={currentUser}
+        authToken={authToken}
+        onConsentVerified={(updatedUser) => setCurrentUser(updatedUser)}
+        onDataDeleted={() => {
+          handleLogout();
+        }}
       />
     </div>
   );

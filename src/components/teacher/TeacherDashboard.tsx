@@ -30,6 +30,7 @@ interface TeacherDashboardProps {
   onNavigate: (tab: string) => void;
   onCreateClass: (name: string, grade: number) => Promise<void> | void;
   onClassUpdated?: (updatedClass: ClassRoom) => void;
+  onSubmissionGraded?: (submission: StudentSubmission) => void;
 }
 
 export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
@@ -42,6 +43,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   onNavigate,
   onCreateClass,
   onClassUpdated,
+  onSubmissionGraded,
 }) => {
   const teacherImage = '/src/assets/images/edubot_teacher_studio_1793780438619.jpg';
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -81,11 +83,25 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
   // Real submission & KPI metrics
   const totalExpected = assignments.reduce((acc, a) => acc + a.totalStudents, 0);
   const totalCompleted = assignments.reduce((acc, a) => acc + a.completedCount, 0);
+  const unsubmittedTotal = Math.max(0, totalExpected - totalCompleted);
   const completionRate = totalExpected > 0 ? `${((totalCompleted / totalExpected) * 100).toFixed(1)}%` : '0%';
   const avgScore =
     submissions.length > 0
       ? `${(submissions.reduce((acc, s) => acc + s.score, 0) / submissions.length).toFixed(1)}/10`
       : 'Chưa có';
+
+  const strugglingStudents = Array.from(
+    submissions
+      .filter((s) => s.score < 6 || (s.misconceptionTags && s.misconceptionTags.length >= 2))
+      .reduce((map, s) => {
+        const existing = map.get(s.studentId);
+        if (!existing || s.score < existing.score) {
+          map.set(s.studentId, s);
+        }
+        return map;
+      }, new Map<string, StudentSubmission>())
+      .values()
+  ).slice(0, 4);
 
   // Aggregate misconceptions from real submissions
   const misconceptionCounts = new Map<string, number>();
@@ -145,6 +161,30 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
 
   return (
     <div className="space-y-8 pb-16">
+      {user.teacherApprovalStatus && user.teacherApprovalStatus !== 'approved' && (
+        <div
+          className={`p-4 rounded-2xl border text-xs flex items-start gap-2.5 ${
+            user.teacherApprovalStatus === 'rejected'
+              ? 'bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800 text-rose-800 dark:text-rose-200'
+              : 'bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800 text-amber-900 dark:text-amber-200'
+          }`}
+        >
+          <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+          <div>
+            <strong>
+              {user.teacherApprovalStatus === 'rejected'
+                ? 'Tài khoản Giáo viên chưa được phê duyệt:'
+                : 'Tài khoản Giáo viên đang chờ Quản trị viên phê duyệt:'}
+            </strong>{' '}
+            <span>
+              {user.teacherApprovalStatus === 'rejected'
+                ? 'Vui lòng liên hệ Quản trị viên trường để kích hoạt quyền tạo lớp và giao bài.'
+                : 'Một số thao tác quản lý lớp, giao bài tập và dùng AI Teacher Studio sẽ được mở khóa ngay sau khi Quản trị viên phê duyệt.'}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* Teacher Cockpit Hero */}
       <div className="relative rounded-3xl overflow-hidden border border-slate-200 dark:border-slate-800 shadow-xl bg-slate-900 text-white min-h-[300px] flex flex-col justify-end">
         <img
@@ -211,7 +251,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
             {completionRate}
           </div>
           <div className="mt-1 text-[11px] text-emerald-600 dark:text-emerald-400 font-medium">
-            {totalCompleted}/{totalExpected} lượt nộp bài
+            {totalCompleted}/{totalExpected} đã nộp · {unsubmittedTotal} chưa nộp
           </div>
         </div>
 
@@ -531,6 +571,35 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
               </div>
             )}
           </div>
+
+          {/* Struggling Students Early Warning */}
+          <div className="bg-white dark:bg-slate-900 p-6 rounded-3xl border border-slate-200 dark:border-slate-800 space-y-3">
+            <div className="flex items-center justify-between text-xs font-bold text-amber-600 dark:text-amber-400">
+              <span>Học sinh cần hỗ trợ thêm</span>
+              <span className="font-mono">{strugglingStudents.length} Em</span>
+            </div>
+            {strugglingStudents.length > 0 ? (
+              <div className="space-y-2">
+                {strugglingStudents.map((sub) => (
+                  <div
+                    key={sub.id}
+                    className="p-3 rounded-xl bg-amber-50/70 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 text-xs flex items-center justify-between gap-2"
+                  >
+                    <div>
+                      <div className="font-semibold text-slate-900 dark:text-white">{sub.studentName}</div>
+                      <div className="text-[11px] text-amber-700 dark:text-amber-300">
+                        Điểm {sub.score}/10 · {sub.misconceptionTags?.length || 0} lỗi cần kèm
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-xs text-slate-500">
+                Các em trong lớp đều đang giữ phong độ tốt (chưa có bài dưới 6 điểm).
+              </p>
+            )}
+          </div>
         </div>
       </div>
 
@@ -598,6 +667,7 @@ export const TeacherDashboard: React.FC<TeacherDashboardProps> = ({
           student={selectedStudentForModal}
           authToken={authToken}
           onClose={() => setSelectedStudentForModal(null)}
+          onSubmissionGraded={onSubmissionGraded}
         />
       )}
     </div>

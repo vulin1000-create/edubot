@@ -4,8 +4,8 @@
  */
 
 import React, { useState } from 'react';
-import { Sparkles, RefreshCw, FileQuestion, AlertCircle, CheckCircle2 } from 'lucide-react';
-import { AiDraftItem } from '../../types/index.ts';
+import { Sparkles, RefreshCw, FileQuestion, AlertCircle, CheckCircle2, Download, BookOpen } from 'lucide-react';
+import { AiDraftItem, RagCitation } from '../../types/index.ts';
 
 interface AiQuizGeneratorProps {
   authToken?: string | null;
@@ -23,6 +23,7 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ authToken, onD
   const [errorMsg, setErrorMsg] = useState('');
   const [savedSuccess, setSavedSuccess] = useState(false);
   const [quizText, setQuizText] = useState<string | null>(null);
+  const [citations, setCitations] = useState<RagCitation[]>([]);
 
   const toggleLevel = (lvl: string) => {
     if (cognitiveLevels.includes(lvl)) {
@@ -59,6 +60,7 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ authToken, onD
       const data = await res.json();
       if (res.ok && data.success && data.draft) {
         setQuizText(data.draft.content.text);
+        setCitations(data.draft.citations || []);
         onDraftCreated(data.draft);
         setSavedSuccess(true);
       } else {
@@ -69,6 +71,19 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ authToken, onD
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleDownload = () => {
+    if (!quizText) return;
+    const blob = new Blob([quizText], { type: 'text/markdown;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `DeKiemTra-Lop${grade}-${subject}.md`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   return (
@@ -131,6 +146,7 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ authToken, onD
                   <option value="tieng-viet">Tiếng Việt</option>
                   <option value="khoa-hoc">Khoa học</option>
                   <option value="tin-hoc">Tin học</option>
+                  <option value="cong-nghe">Công nghệ</option>
                 </select>
               </div>
             </div>
@@ -215,9 +231,19 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ authToken, onD
               <FileQuestion className="w-4 h-4 text-purple-500" />
               <span>Đề kiểm tra & Lời giải chi tiết</span>
             </h3>
-            <span className="text-xs font-semibold text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950/40 px-2.5 py-0.5 rounded-md border border-purple-200 dark:border-purple-800">
-              Có thang điểm & Đáp án
-            </span>
+            {quizText ? (
+              <button
+                onClick={handleDownload}
+                className="p-1.5 text-xs text-purple-700 dark:text-purple-300 hover:bg-purple-50 dark:hover:bg-purple-950/40 rounded-lg flex items-center gap-1 font-semibold"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Tải .md</span>
+              </button>
+            ) : (
+              <span className="text-xs font-semibold text-purple-600 dark:text-purple-400 bg-purple-50 dark:bg-purple-950/40 px-2.5 py-0.5 rounded-md border border-purple-200 dark:border-purple-800">
+                Có thang điểm & Đáp án
+              </span>
+            )}
           </div>
 
           {savedSuccess && (
@@ -227,13 +253,27 @@ export const AiQuizGenerator: React.FC<AiQuizGeneratorProps> = ({ authToken, onD
             </div>
           )}
 
+          {citations.length > 0 && (
+            <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/50 border border-slate-200 dark:border-slate-700 space-y-1 text-[11px]">
+              <div className="font-semibold text-cyan-600 dark:text-cyan-400 flex items-center gap-1">
+                <BookOpen className="w-3.5 h-3.5" />
+                <span>Nguồn RAG tham chiếu ({citations.length}):</span>
+              </div>
+              {citations.map((c) => (
+                <div key={c.chunkId} className="text-slate-600 dark:text-slate-300">
+                  • <strong>{c.title}</strong> ({c.sourceRef})
+                </div>
+              ))}
+            </div>
+          )}
+
           <div className="p-4 rounded-2xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800 text-xs sm:text-sm text-slate-800 dark:text-slate-200 leading-relaxed font-mono whitespace-pre-wrap max-h-[500px] overflow-y-auto">
             {quizText ? (
               quizText
             ) : (
               <div className="text-slate-400 py-12 text-center font-sans space-y-2">
                 <FileQuestion className="w-8 h-8 mx-auto text-slate-300" />
-                <div>Cấu hình thông số và nhấn "Tạo bộ câu hỏi & Lời giải AI".</div>
+                <div>Cấu hình thông số và nhấn &ldquo;Tạo bộ câu hỏi & Lời giải AI&rdquo;.</div>
               </div>
             )}
           </div>

@@ -4,12 +4,15 @@
  */
 
 export type UserRole = 'student' | 'teacher' | 'admin';
+export type TeacherApprovalStatus = 'none' | 'pending' | 'approved' | 'rejected';
 
 export interface User {
   id: string;
   name: string;
   email: string;
   role: UserRole;
+  teacherApprovalStatus?: TeacherApprovalStatus;
+  authProvider?: 'local' | 'firebase';
   grade?: number; // 1 to 5 for students
   avatar?: string;
   school?: string;
@@ -17,10 +20,34 @@ export interface User {
   xp?: number;
   streakDays?: number;
   badges?: string[];
+  teacherNote?: string;
+  guardianEmail?: string;
+  parentalConsentVerified?: boolean;
   createdAt: string;
 }
 
-export type ResourceStatus = 'verified' | 'pending' | 'unverified' | 'ai_draft';
+export type ResourceStatus =
+  | 'verified'
+  | 'pending'
+  | 'unverified'
+  | 'ai_draft'
+  | 'DRAFT'
+  | 'NEEDS_REVIEW'
+  | 'VERIFIED'
+  | 'APPROVED'
+  | 'PUBLISHED';
+
+export function isLessonVerified(status: ResourceStatus): boolean {
+  return status === 'verified' || status === 'VERIFIED' || status === 'APPROVED' || status === 'PUBLISHED';
+}
+
+export interface AcademicYear {
+  id: string;
+  name: string;
+  startDate: string;
+  endDate: string;
+  isActive: boolean;
+}
 
 export interface CurriculumSubject {
   id: string;
@@ -52,6 +79,9 @@ export interface Lesson {
   title: string;
   lessonCode: string;
   order: number;
+  sourceBook?: string; // e.g. "Kết nối tri thức với cuộc sống"
+  mediaUrl?: string;
+  externalResourceUrl?: string;
   objectives: string[]; // Yêu cầu cần đạt
   coreKnowledge: string[]; // Kiến thức trọng tâm
   termsAndDefinitions: { term: string; definition: string }[];
@@ -87,7 +117,8 @@ export type QuestionType =
   | 'fill_blank'
   | 'matching'
   | 'step_math'
-  | 'short_answer';
+  | 'short_answer'
+  | 'essay';
 
 export interface Question {
   id: string;
@@ -126,6 +157,7 @@ export interface ExerciseSet {
   subjectId: string;
   grade: number;
   lessonId?: string;
+  createdBy?: string;
   questions: Question[];
   durationMinutes: number;
   totalPoints: number;
@@ -147,6 +179,8 @@ export interface Assignment {
   id: string;
   classId: string;
   className: string;
+  teacherId?: string;
+  targetStudentIds?: string[];
   exerciseSetId: string;
   title: string;
   subjectId: string;
@@ -173,7 +207,44 @@ export interface StudentSubmission {
   completedAt: string;
   timeSpentSeconds: number;
   feedback: string;
+  teacherFeedback?: string;
+  gradedBy?: string;
+  gradedAt?: string;
+  status?: 'submitted' | 'graded';
   misconceptionTags: string[];
+}
+
+export interface LearningProgress {
+  id: string;
+  studentId: string;
+  lessonId: string;
+  grade: number;
+  subjectId: string;
+  completed: boolean;
+  checkpointPassed: boolean;
+  timeSpentSeconds: number;
+  completedAt: string;
+}
+
+export interface RagCitation {
+  chunkId: string;
+  documentId: string;
+  title: string;
+  sourceRef: string;
+  status: ResourceStatus | string;
+  snippet: string;
+  score: number;
+}
+
+export interface RagDocumentSummary {
+  documentId: string;
+  title: string;
+  grade: number;
+  subjectId: string;
+  sourceRef: string;
+  status: ResourceStatus | string;
+  chunkCount: number;
+  ingestedAt: string;
 }
 
 export interface AiChatMessage {
@@ -182,8 +253,17 @@ export interface AiChatMessage {
   text: string;
   timestamp: string;
   referencedLessons?: string[];
+  citations?: RagCitation[];
   suggestedPrompts?: string[];
   robotExpression?: 'happy' | 'thinking' | 'explaining' | 'celebrating';
+}
+
+export interface ContentReviewVersion {
+  version: number;
+  status: 'draft' | 'approved' | 'rejected' | 'published';
+  reviewer: string;
+  notes?: string;
+  reviewedAt: string;
 }
 
 export interface AiDraftItem {
@@ -194,9 +274,12 @@ export interface AiDraftItem {
   grade: number;
   createdAt: string;
   createdBy: string;
+  authorId?: string;
   status: 'draft' | 'approved' | 'rejected' | 'published';
   content: any;
   teacherNotes?: string;
+  citations?: RagCitation[];
+  reviewHistory?: ContentReviewVersion[];
 }
 
 export interface AuditLog {
@@ -209,9 +292,21 @@ export interface AuditLog {
   status: 'success' | 'warning' | 'info';
 }
 
+export interface ParentConsentRecord {
+  id: string;
+  studentId: string;
+  studentName: string;
+  guardianEmail: string;
+  relationship: string;
+  status: 'pending' | 'verified' | 'revoked';
+  requestedAt: string;
+  verifiedAt?: string;
+}
+
 export interface SystemSettings {
   childSafetyFilterEnabled: boolean;
   parentalConsentRequired: boolean;
+  leaderboardEnabled: boolean;
   dataRetentionDays: number;
   aiMaxTokensPerDay: number;
   curriculumStandard: string;

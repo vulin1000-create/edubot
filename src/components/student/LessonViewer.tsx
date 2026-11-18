@@ -4,7 +4,8 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { Lesson } from '../../types/index.ts';
+import { Lesson, isLessonVerified } from '../../types/index.ts';
+import { persistProgressToFirestore } from '../../lib/firestoreService.ts';
 import {
   ArrowLeft,
   CheckCircle2,
@@ -13,49 +14,107 @@ import {
   Bot,
   PlayCircle,
   HelpCircle,
-  FileCheck2
+  FileCheck2,
+  ExternalLink,
+  BookOpen,
 } from 'lucide-react';
 
 interface LessonViewerProps {
   lesson: Lesson;
   hasMatchingExercise?: boolean;
+  isCompleted?: boolean;
+  authToken?: string | null;
   onBack: () => void;
   onOpenExercise: (lessonId: string) => void;
   onAskAi: (lessonTitle: string, lessonId: string) => void;
+  onProgressUpdated?: (lessonId: string, xpEarned: number) => void;
 }
 
 export const LessonViewer: React.FC<LessonViewerProps> = ({
   lesson,
   hasMatchingExercise = true,
+  isCompleted = false,
+  authToken,
   onBack,
   onOpenExercise,
   onAskAi,
+  onProgressUpdated,
 }) => {
   const [activeCheckpointAnswer, setActiveCheckpointAnswer] = useState<number | null>(null);
   const [showCheckpointFeedback, setShowCheckpointFeedback] = useState(false);
+  const [markingComplete, setMarkingComplete] = useState(false);
+  const [completedDone, setCompletedDone] = useState(isCompleted);
+  const [progressBanner, setProgressBanner] = useState('');
 
   useEffect(() => {
     setActiveCheckpointAnswer(null);
     setShowCheckpointFeedback(false);
-  }, [lesson.id]);
+    setCompletedDone(isCompleted);
+    setProgressBanner('');
+  }, [lesson.id, isCompleted]);
 
   const checkpoint = lesson.interactiveContent?.sections[0]?.checkpointQuestion;
+  const verified = isLessonVerified(lesson.status);
 
-  const statusBadge =
-    lesson.status === 'verified'
-      ? {
-          cls: 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800',
-          label: `Đã thẩm định - ${lesson.officialReference.docNumber}`,
+  const statusBadge = verified
+    ? {
+        cls: 'text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/40 border-emerald-200 dark:border-emerald-800',
+        label: `Đã thẩm định - ${lesson.officialReference.docNumber}`,
+      }
+    : lesson.status === 'pending' || lesson.status === 'NEEDS_REVIEW'
+    ? {
+        cls: 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800',
+        label: `Đang chờ thẩm định - ${lesson.officialReference.docNumber}`,
+      }
+    : {
+        cls: 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800',
+        label: 'Bản nháp / Chưa xác minh nguồn - Cần rà soát',
+      };
+
+  const handleMarkCompleted = async () => {
+    if (!authToken) {
+      setProgressBanner('Hãy đăng nhập tài khoản học sinh để lưu tiến độ và nhận +15 XP.');
+      return;
+    }
+    setMarkingComplete(true);
+    setProgressBanner('');
+    const checkpointPassed =
+      Boolean(checkpoint) && activeCheckpointAnswer === checkpoint?.correctAnswer;
+    try {
+      const res = await fetch('/api/learning-progress', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({
+          lessonId: lesson.id,
+          completed: true,
+          checkpointPassed,
+          timeSpentSeconds: 180,
+        }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCompletedDone(true);
+        setProgressBanner(
+          data.xpEarned > 0
+            ? `Tuyệt vời! Bạn đã hoàn thành bài học và nhận +${data.xpEarned} XP.`
+            : 'Đã cập nhật tiến độ hoàn thành bài học.'
+        );
+        if (data.progress) {
+          persistProgressToFirestore(data.progress).catch(() => {});
         }
-      : lesson.status === 'pending'
-      ? {
-          cls: 'text-amber-600 dark:text-amber-400 bg-amber-50 dark:bg-amber-950/40 border-amber-200 dark:border-amber-800',
-          label: `Đang chờ thẩm định - ${lesson.officialReference.docNumber}`,
-        }
-      : {
-          cls: 'text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/40 border-rose-200 dark:border-rose-800',
-          label: `Chưa xác minh nguồn - Cần rà soát`,
-        };
+        onProgressUpdated?.(lesson.id, data.xpEarned || 0);
+      } else {
+        setProgressBanner(data.error || 'Không thể lưu tiến độ bài học.');
+      }
+    } catch {
+      setProgressBanner('Lỗi kết nối máy chủ khi lưu tiến độ.');
+    } finally {
+      setMarkingComplete(false);
+    }
+  };
 
   return (
     <div className="max-w-4xl mx-auto space-y-6 pb-16">
@@ -88,6 +147,15 @@ export const LessonViewer: React.FC<LessonViewerProps> = ({
           <span>Học kỳ {lesson.semester}</span>
           <span aria-hidden="true">·</span>
           <span>Phiên bản: {lesson.officialReference.curriculumVersion}</span>
+          {lesson.sourceBook && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="inline-flex items-center gap-1 text-slate-600 dark:text-slate-300 font-medium">
+                <BookOpen className="w-3.5 h-3.5 text-cyan-500" />
+                <span>{lesson.sourceBook}</span>
+              </span>
+            </>
+          )}
         </div>
 
         <h1 className="text-2xl sm:text-3xl font-extrabold text-slate-900 dark:text-white font-display">
@@ -97,6 +165,20 @@ export const LessonViewer: React.FC<LessonViewerProps> = ({
         <p className="text-sm text-slate-600 dark:text-slate-300 leading-relaxed">
           {lesson.summary}
         </p>
+
+        {lesson.externalResourceUrl && (
+          <div className="text-xs">
+            <a
+              href={lesson.externalResourceUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 text-cyan-600 dark:text-cyan-400 hover:underline font-medium"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              <span>Tài liệu tham khảo mở rộng (BGD&ĐT / Học liệu số)</span>
+            </a>
+          </div>
+        )}
 
         {/* Quick action buttons */}
         <div className="pt-2 flex flex-wrap items-center gap-3">
@@ -121,7 +203,32 @@ export const LessonViewer: React.FC<LessonViewerProps> = ({
             <Bot className="w-4 h-4 text-cyan-500" />
             <span>Hỏi EduBot về bài này</span>
           </button>
+
+          <button
+            onClick={handleMarkCompleted}
+            disabled={markingComplete || completedDone}
+            className={`px-4 py-2 text-xs sm:text-sm font-semibold rounded-xl transition-colors flex items-center gap-2 ${
+              completedDone
+                ? 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800'
+                : 'bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm disabled:opacity-60'
+            }`}
+          >
+            <CheckCircle2 className="w-4 h-4" />
+            <span>
+              {completedDone
+                ? 'Đã hoàn thành bài học'
+                : markingComplete
+                ? 'Đang lưu tiến độ...'
+                : 'Đánh dấu hoàn thành bài học'}
+            </span>
+          </button>
         </div>
+
+        {progressBanner && (
+          <div className="p-3 rounded-xl bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 text-xs text-emerald-800 dark:text-emerald-300">
+            {progressBanner}
+          </div>
+        )}
       </div>
 
       {/* 1. Yêu cầu cần đạt */}
